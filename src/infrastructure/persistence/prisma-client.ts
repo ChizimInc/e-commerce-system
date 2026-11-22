@@ -8,3 +8,5 @@ export function createPrismaClient(databaseUrl: string): PrismaClient {
 }
 
 export type { PrismaClient };
+/** Tipurile generate (ex. `Prisma.ProductModel`), re-exportate ca adaptoarele sa nu importe din `generated/`. */
+export type { Prisma } from '../../generated/prisma/client';

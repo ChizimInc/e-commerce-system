@@ -25,3 +25,66 @@ model User {
 
   @@map("users")
 }
+
+enum Currency {
+  RON
+  EUR
+  USD
+}
+
+// Categorii ierarhice (self-reference prin parent_id). Stergerea unei categorii cu copii/produse e blocata.
+model Category {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      String
+  parentId  String?    @map("parent_id") @db.Uuid
+  parent    Category?  @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children  Category[] @relation("CategoryTree")
+  products  Product[]
+  createdAt DateTime   @default(now()) @map("created_at")
+
+  @@index([parentId])
+  @@map("categories")
+}
+
+model Product {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  description String       @default("")
+  priceAmount Int          @map("price_amount") // in cenți
+  currency    Currency
+  stock       Int
+  categoryId  String?      @map("category_id") @db.Uuid
+  category    Category?    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  bundleItems BundleItem[]
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  @@index([categoryId])
+  @@index([name])
+  @@map("products")
+}
+
+// Pachet de produse: pretul se calculeaza din componente (nu se stocheaza).
+model Bundle {
+  id              String       @id @default(uuid()) @db.Uuid
+  name            String
+  description     String       @default("")
+  discountPercent Int          @default(0) @map("discount_percent")
+  items           BundleItem[]
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@map("bundles")
+}
+
+model BundleItem {
+  bundleId  String  @map("bundle_id") @db.Uuid
+  productId String  @map("product_id") @db.Uuid
+  quantity  Int
+  bundle    Bundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@id([bundleId, productId])
+  @@index([productId])
+  @@map("bundle_items")
+}
