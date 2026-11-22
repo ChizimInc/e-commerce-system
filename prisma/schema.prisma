@@ -1,0 +1,27 @@
+// Schema Prisma. Banii se stocheaza mereu in cenți (Int) + moneda, niciodata float (vezi docs/PLAN.md §6).
+// Se extinde pe masura ce iteratiile adauga module (catalog, cart, ordering etc.).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  role         Role     @default(CUSTOMER)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("users")
+}

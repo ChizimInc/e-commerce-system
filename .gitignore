@@ -1,0 +1,21 @@
+# Fisiere locale de planificare (nu se urca pe GitHub)
+CLAUDE.md
+docs/PLAN.md
+
+# Dependente si build
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Secrete si configurare locala
+.env
+.env.*
+!.env.example
+
+# Cod generat de Prisma (se regenereaza cu `npm run db:generate`)
+src/generated/
+
+# Diverse
+.DS_Store
+*.log
