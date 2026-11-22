@@ -22,6 +22,7 @@ model User {
   passwordHash String   @map("password_hash")
   role         Role     @default(CUSTOMER)
   createdAt    DateTime @default(now()) @map("created_at")
+  cart         Cart?
 
   @@map("users")
 }
@@ -87,4 +88,27 @@ model BundleItem {
   @@id([bundleId, productId])
   @@index([productId])
   @@map("bundle_items")
+}
+
+// Un singur cos per utilizator. Articolele refera un produs SAU un pachet (de aceea item_id nu are FK).
+model Cart {
+  id        String     @id @default(uuid()) @db.Uuid
+  userId    String     @unique @map("user_id") @db.Uuid
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items     CartItem[]
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  @@map("carts")
+}
+
+model CartItem {
+  cartId   String @map("cart_id") @db.Uuid
+  itemId   String @map("item_id") @db.Uuid
+  quantity Int
+  position Int // ordinea de adaugare in cos
+  cart     Cart   @relation(fields: [cartId], references: [id], onDelete: Cascade)
+
+  @@id([cartId, itemId])
+  @@map("cart_items")
 }

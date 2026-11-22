@@ -1,4 +1,6 @@
+import { cartOpenApi } from '../../modules/cart/adapters/http/cart.openapi';
 import { catalogOpenApi } from '../../modules/catalog/adapters/http/catalog.openapi';
+import { authOpenApi } from '../../modules/identity/adapters/http/auth.openapi';
 import { errorResponseSchema } from './common-schemas';
 import { schemaOf, type JsonObject, type OpenApiFragment } from './openapi-helpers';
 
@@ -51,7 +53,12 @@ const systemOpenApi: OpenApiFragment = {
 };
 
 /** Fragmentele de documentatie ale modulelor; fiecare modul nou isi adauga aici fragmentul. */
-const fragments: readonly OpenApiFragment[] = [systemOpenApi, catalogOpenApi];
+const fragments: readonly OpenApiFragment[] = [
+  systemOpenApi,
+  authOpenApi,
+  catalogOpenApi,
+  cartOpenApi,
+];
 
 function buildDocument(parts: readonly OpenApiFragment[]): JsonObject {
   const merge = <T>(pick: (fragment: OpenApiFragment) => Record<string, T> | undefined) =>
