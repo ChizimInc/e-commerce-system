@@ -56,12 +56,32 @@ import {
   type PricingPolicy,
 } from './modules/ordering/domain/pricing/PricingPolicy';
 import type { OrderPlacement } from './modules/ordering/ports/out/OrderPlacement';
+import { createPaymentsRouter } from './modules/payments/adapters/http/payments.routes';
+import { OrderSettlementPayableOrders } from './modules/payments/adapters/ordering/OrderSettlementPayableOrders';
+import { InMemoryPaymentRepository } from './modules/payments/adapters/persistence/InMemoryPaymentRepository';
+import { PrismaPaymentRepository } from './modules/payments/adapters/persistence/PrismaPaymentRepository';
+import { CashOnDeliveryFactory } from './modules/payments/adapters/providers/cod/CashOnDeliveryFactory';
+import { CourierCodApi } from './modules/payments/adapters/providers/cod/CourierCodApi';
+import { PayPalFactory } from './modules/payments/adapters/providers/paypal/PayPalFactory';
+import { PayPalMockClient } from './modules/payments/adapters/providers/paypal/PayPalMockClient';
+import { StripeFactory } from './modules/payments/adapters/providers/stripe/StripeFactory';
+import { StripeMockApi } from './modules/payments/adapters/providers/stripe/StripeMockApi';
+import { GetOrderPayment } from './modules/payments/application/GetOrderPayment';
+import { HandlePaymentWebhook } from './modules/payments/application/HandlePaymentWebhook';
+import { PayOrder } from './modules/payments/application/PayOrder';
+import { PaymentProviders } from './modules/payments/application/PaymentProviders';
+import { RefundOnOrderCancelled } from './modules/payments/application/RefundOnOrderCancelled';
+import { RefundPayment } from './modules/payments/application/RefundPayment';
+import type { PaymentProviderFactory } from './modules/payments/ports/out/PaymentProviderFactory';
+import type { PaymentRepository } from './modules/payments/ports/out/PaymentRepository';
 import type { OrderRepository } from './modules/ordering/ports/out/OrderRepository';
 import type { StockRestoration } from './modules/ordering/ports/out/StockRestoration';
 import {
   ConsoleLogger,
   InMemoryEventBus,
   RandomUuidGenerator,
+  systemClock,
+  type Clock,
   type EventBus,
   type IdGenerator,
   type Logger,
@@ -86,6 +106,7 @@ export interface Repositories {
   orderPlacement: OrderPlacement;
   /** Repunerea idempotenta a stocului unei comenzi anulate. */
   stockRestoration: StockRestoration;
+  payments: PaymentRepository;
 }
 
 /** Adaptoare in-memory: pornesc fara baza de date (teste, demo rapid). */
@@ -102,6 +123,7 @@ export function createInMemoryRepositories(): Repositories {
     orders,
     orderPlacement: new InMemoryOrderPlacement(orders, products, carts),
     stockRestoration: new InMemoryStockRestoration(products),
+    payments: new InMemoryPaymentRepository(),
   };
 }
 
@@ -118,6 +140,7 @@ export function createPrismaRepositories(prisma: PrismaClient): Repositories {
     // Plasarea unei comenzi scade stocul direct in baza de date, pe langa proxy: invalidam cache-ul.
     orderPlacement: new PrismaOrderPlacement(prisma, (ids) => products.evict(ids)),
     stockRestoration: new PrismaStockRestoration(prisma, (ids) => products.evict(ids)),
+    payments: new PrismaPaymentRepository(prisma),
   };
 }
 
@@ -147,6 +170,25 @@ export const DEFAULT_ORDERING_SETTINGS: OrderingSettings = {
   fraud: { maxOrdersPerWindow: 1000, windowMs: 60_000, suspiciousAmountCents: MAX_AMOUNT_CENTS },
 };
 
+/** Configurarea platilor: secretul webhook-urilor si, optional, furnizorii (implicit: cele trei mock-uri locale). */
+export interface PaymentSettings {
+  webhookSecret: string;
+  /** Fabricile furnizorilor; testele pot injecta mock-uri proprii ca sa observe apelurile sau sa simuleze erori. */
+  factories?: readonly PaymentProviderFactory[];
+}
+
+/** Familiile de furnizori implicite: toate sunt mock-uri locale, fara apeluri de retea. */
+export function createMockPaymentFactories(
+  webhookSecret: string,
+  clock: Clock = systemClock,
+): PaymentProviderFactory[] {
+  return [
+    new StripeFactory(new StripeMockApi(), webhookSecret, clock),
+    new PayPalFactory(new PayPalMockClient(), webhookSecret, clock),
+    new CashOnDeliveryFactory(new CourierCodApi(), webhookSecret),
+  ];
+}
+
 export interface ApplicationDependencies {
   logger: Logger;
   repositories: Repositories;
@@ -155,6 +197,9 @@ export interface ApplicationDependencies {
   /** Generatorul de id-uri (implicit UUID aleatoriu; testele pot injecta unul determinist). */
   ids?: IdGenerator;
   ordering?: OrderingSettings;
+  payments: PaymentSettings;
+  /** Ceasul aplicatiei (plati: momentele tranzitiilor si toleranta webhook-urilor); testele pot injecta unul controlat. */
+  clock?: Clock;
   /** Magistrala de evenimente (implicit in-memory); testele pot injecta una proprie ca sa observe evenimentele. */
   events?: EventBus;
 }
@@ -170,6 +215,8 @@ export function createApplication({
   checkDatabase,
   ids = new RandomUuidGenerator(),
   ordering = DEFAULT_ORDERING_SETTINGS,
+  payments: paymentSettings,
+  clock = systemClock,
   events = new InMemoryEventBus(logger.child({ module: 'events' })),
 }: ApplicationDependencies): Express {
   // Identity
@@ -232,6 +279,22 @@ export function createApplication({
     orderLogger,
   );
 
+  // Payments: furnizorii se aleg dupa metoda de plata (Abstract Factory), iar `ordering` e vazut doar prin portul de decontare.
+  const paymentLogger = logger.child({ module: 'payments' });
+  const payableOrders = new OrderSettlementPayableOrders(orders);
+  const providers = new PaymentProviders(
+    paymentSettings.factories ?? createMockPaymentFactories(paymentSettings.webhookSecret, clock),
+    { payments: repositories.payments, clock, logger: paymentLogger },
+  );
+  const refundPayment = new RefundPayment(repositories.payments, providers, clock, paymentLogger);
+  // Abonat (Observer): o comanda platita si apoi anulata se ramburseaza si trece in REFUNDED.
+  new RefundOnOrderCancelled(
+    payableOrders,
+    repositories.payments,
+    refundPayment,
+    paymentLogger,
+  ).register(events);
+
   return createApp({
     logger,
     checkDatabase,
@@ -261,6 +324,20 @@ export function createApplication({
         requireAuth: authentication.requireAuth,
         requireAdmin: authentication.requireRole('ADMIN'),
       }),
+      createPaymentsRouter({
+        payOrder: new PayOrder(
+          payableOrders,
+          repositories.payments,
+          providers,
+          refundPayment,
+          ids,
+          clock,
+          paymentLogger,
+        ),
+        getOrderPayment: new GetOrderPayment(payableOrders, repositories.payments),
+        webhooks: new HandlePaymentWebhook(providers, repositories.payments, paymentLogger),
+        requireAuth: authentication.requireAuth,
+      }),
     ],
   });
 }
@@ -288,6 +365,7 @@ export function createContainer(config: Config): Container {
     checkDatabase: async () => {
       await prisma.$queryRaw`SELECT 1`;
     },
+    payments: { webhookSecret: config.PAYMENT_WEBHOOK_SECRET },
     ordering: {
       pricing: { vatPercent: config.VAT_PERCENT, discountTiers: config.DISCOUNT_TIERS },
       allowedCountries: config.SHIPPING_COUNTRIES,

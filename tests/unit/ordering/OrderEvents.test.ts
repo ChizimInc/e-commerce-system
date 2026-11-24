@@ -51,8 +51,9 @@ describe('evenimentele comenzii', () => {
       });
     });
 
-    it('REFUNDED nu emite eveniment (apare cu plata, Iteratia 4)', () => {
-      expect(eventForOrder(makeOrder().pay().cancel().refund(), at)).toBeNull();
+    it('REFUNDED emite OrderRefunded (rambursarea vine din modulul payments)', () => {
+      const order = makeOrder().pay().cancel().refund();
+      expect(eventForOrder(order, at)).toMatchObject({ type: 'OrderRefunded', orderId: order.id });
     });
 
     it('OrderCancelled spune daca comanda fusese platita', () => {
@@ -63,7 +64,7 @@ describe('evenimentele comenzii', () => {
     it('nu poarta date personale (adresa, nume de destinatar) si acopera toate tipurile declarate', () => {
       const event = eventForOrder(makeOrder(), at);
       expect(JSON.stringify(event)).not.toMatch(/Ana Popescu|Libertatii|Chisinau|MD-2001/);
-      expect(ORDER_EVENT_TYPES).toHaveLength(5);
+      expect(ORDER_EVENT_TYPES).toHaveLength(6);
     });
   });
 
@@ -95,7 +96,7 @@ describe('evenimentele comenzii', () => {
       expect(h.published.every((e) => e.orderId === order.id)).toBe(true);
     });
 
-    it('anularea emite OrderCancelled; rambursarea nu emite nimic', async () => {
+    it('anularea emite OrderCancelled, iar rambursarea OrderRefunded', async () => {
       const order = await h.service.placeOrder(ana, PLACE_INPUT);
       await h.service.changeStatus(admin, order.id, 'PAID');
       await h.service.changeStatus(admin, order.id, 'CANCELLED');
@@ -105,6 +106,7 @@ describe('evenimentele comenzii', () => {
         'OrderPlaced',
         'OrderPaid',
         'OrderCancelled',
+        'OrderRefunded',
       ]);
       expect(h.published[2]).toMatchObject({ wasPaid: true });
     });

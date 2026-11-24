@@ -2,6 +2,7 @@ import { cartOpenApi } from '../../modules/cart/adapters/http/cart.openapi';
 import { catalogOpenApi } from '../../modules/catalog/adapters/http/catalog.openapi';
 import { authOpenApi } from '../../modules/identity/adapters/http/auth.openapi';
 import { ordersOpenApi } from '../../modules/ordering/adapters/http/orders.openapi';
+import { paymentsOpenApi } from '../../modules/payments/adapters/http/payments.openapi';
 import { errorResponseSchema } from './common-schemas';
 import { schemaOf, type JsonObject, type OpenApiFragment } from './openapi-helpers';
 
@@ -60,6 +61,7 @@ const fragments: readonly OpenApiFragment[] = [
   catalogOpenApi,
   cartOpenApi,
   ordersOpenApi,
+  paymentsOpenApi,
 ];
 
 function buildDocument(parts: readonly OpenApiFragment[]): JsonObject {

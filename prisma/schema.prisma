@@ -158,6 +158,7 @@ model Order {
   paidAt             DateTime?      @map("paid_at")
   items              OrderItem[]
   stockRestoration   OrderStockRestoration?
+  payment            Payment?
   createdAt          DateTime       @default(now()) @map("created_at")
   updatedAt          DateTime       @updatedAt @map("updated_at")
 
@@ -188,4 +189,43 @@ model OrderStockRestoration {
   restoredAt DateTime @default(now()) @map("restored_at")
 
   @@map("order_stock_restorations")
+}
+
+enum PaymentProvider {
+  STRIPE
+  PAYPAL
+  COD
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  REFUNDING
+  REFUNDED
+  DECLINED
+  FAILED
+}
+
+// Plata unei comenzi: o singura plata per comanda (order_id UNIQUE) si cheie de idempotenta unica ("pay:<orderId>"),
+// deci doua cereri simultane nu pot plati aceeasi comanda de doua ori. Suma e in cenți (Int) + moneda, ca in orders.
+// external_id = id-ul tranzactiei la furnizor (unic per furnizor); refund_external_id = id-ul rambursarii.
+// Plata nu se sterge odata cu comanda (Restrict): e o inregistrare financiara.
+model Payment {
+  id               String          @id @default(uuid()) @db.Uuid
+  orderId          String          @unique @map("order_id") @db.Uuid
+  order            Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  provider         PaymentProvider
+  status           PaymentStatus   @default(PENDING)
+  amount           Int // in cenți
+  currency         Currency
+  externalId       String?         @map("external_id")
+  refundExternalId String?         @map("refund_external_id")
+  failureReason    String?         @map("failure_reason")
+  idempotencyKey   String          @unique @map("idempotency_key")
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  @@unique([provider, externalId])
+  @@map("payments")
 }

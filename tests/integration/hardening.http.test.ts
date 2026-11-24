@@ -16,7 +16,13 @@ import { AuthorizationProxy } from '../../src/modules/catalog/application/Author
 import { CatalogAdminUseCases } from '../../src/modules/catalog/application/CatalogAdminUseCases';
 import { CatalogQueryService } from '../../src/modules/catalog/application/CatalogQueryService';
 import { RandomUuidGenerator, type Principal } from '../../src/shared';
-import { TEST_JWT_SECRET, TEST_PASSWORD, bearer, buildTestApp } from '../helpers/app';
+import {
+  TEST_JWT_SECRET,
+  TEST_PASSWORD,
+  TEST_WEBHOOK_SECRET,
+  bearer,
+  buildTestApp,
+} from '../helpers/app';
 import { silentLogger } from '../helpers/silent-logger';
 
 describe('limita de cereri pe /auth', () => {
@@ -31,6 +37,7 @@ describe('limita de cereri pe /auth', () => {
         authRateLimit: { windowMs: 60_000, max },
       },
       checkDatabase: () => Promise.resolve(),
+      payments: { webhookSecret: TEST_WEBHOOK_SECRET },
     });
 
   it('dupa limita, login-ul raspunde 429 (si nu mai ruleaza bcrypt)', async () => {
@@ -129,6 +136,7 @@ describe('fluxul HTTP prin CachingProductRepository (Proxy cu cache)', () => {
         authRateLimit: { windowMs: 60_000, max: 1000 },
       },
       checkDatabase: () => Promise.resolve(),
+      payments: { webhookSecret: TEST_WEBHOOK_SECRET },
     });
     await new BootstrapAdmin(
       repositories.users,

@@ -96,6 +96,8 @@ const envSchema = z
     /** Anti-frauda: cate comenzi are voie sa plaseze un client intr-o fereastra de timp. */
     FRAUD_MAX_ORDERS_PER_WINDOW: z.coerce.number().int().min(1).max(1000).default(5),
     FRAUD_WINDOW_SECONDS: z.coerce.number().int().min(1).max(86_400).default(600),
+    /** Secretul cu care furnizorii (mock) isi semneaza webhook-urile (HMAC). Minim 16 caractere. */
+    PAYMENT_WEBHOOK_SECRET: z.string().min(16, 'trebuie sa aiba cel putin 16 caractere'),
     /** Anti-frauda: un total peste aceasta suma (in cenți) cere verificare manuala. */
     FRAUD_SUSPICIOUS_AMOUNT_CENTS: z.coerce
       .number()
@@ -109,6 +111,17 @@ const envSchema = z
       !(env.NODE_ENV === 'production' && env.JWT_SECRET.startsWith(PLACEHOLDER_SECRET_PREFIX)),
     {
       path: ['JWT_SECRET'],
+      message: 'valoarea de exemplu din .env.example nu e permisa in productie',
+    },
+  )
+  .refine(
+    (env) =>
+      !(
+        env.NODE_ENV === 'production' &&
+        env.PAYMENT_WEBHOOK_SECRET.startsWith(PLACEHOLDER_SECRET_PREFIX)
+      ),
+    {
+      path: ['PAYMENT_WEBHOOK_SECRET'],
       message: 'valoarea de exemplu din .env.example nu e permisa in productie',
     },
   );

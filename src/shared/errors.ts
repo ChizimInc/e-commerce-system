@@ -26,10 +26,10 @@ export class UnauthorizedError extends DomainError {
   }
 }
 
-/** Apelantul este autentificat, dar nu are rolul necesar. */
+/** Apelantul este autentificat, dar nu are rolul necesar (sau, cu alt `code`, nu are dreptul la operatia ceruta). */
 export class ForbiddenError extends DomainError {
-  constructor(message = 'Nu ai dreptul sa efectuezi aceasta operatie') {
-    super(message, 'FORBIDDEN');
+  constructor(message = 'Nu ai dreptul sa efectuezi aceasta operatie', code = 'FORBIDDEN') {
+    super(message, code);
   }
 }
 
@@ -37,5 +37,19 @@ export class ForbiddenError extends DomainError {
 export class TooManyRequestsError extends DomainError {
   constructor(message: string, code = 'TOO_MANY_REQUESTS') {
     super(message, code);
+  }
+}
+
+/** Un serviciu extern (ex. furnizor de plati) a raspuns cu o eroare sau cu un raspuns de neinteles. */
+export class BadGatewayError extends DomainError {
+  constructor(message: string, code = 'BAD_GATEWAY', options?: ErrorOptions) {
+    super(message, code, options);
+  }
+}
+
+/** Un serviciu extern nu a raspuns la timp. */
+export class GatewayTimeoutError extends DomainError {
+  constructor(message: string, code = 'GATEWAY_TIMEOUT', options?: ErrorOptions) {
+    super(message, code, options);
   }
 }

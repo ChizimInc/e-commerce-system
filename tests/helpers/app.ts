@@ -4,15 +4,17 @@ import {
   createApplication,
   createInMemoryRepositories,
   type OrderingSettings,
+  type PaymentSettings,
   type Repositories,
 } from '../../src/composition-root';
 import { BcryptPasswordHasher } from '../../src/modules/identity/adapters/security/BcryptPasswordHasher';
 import { BootstrapAdmin } from '../../src/modules/identity/application/BootstrapAdmin';
-import { RandomUuidGenerator, type EventBus } from '../../src/shared';
+import { RandomUuidGenerator, type Clock, type EventBus } from '../../src/shared';
 import { silentLogger } from './silent-logger';
 
 export const TEST_JWT_SECRET = 'test-secret-test-secret-test-secret-123456';
 export const TEST_PASSWORD = 'parola-de-test-123';
+export const TEST_WEBHOOK_SECRET = 'test-webhook-secret-123456';
 const ADMIN_EMAIL = 'admin@test.local';
 
 export interface TestApp {
@@ -28,6 +30,9 @@ export interface TestAppOptions {
   /** Regulile comenzilor (pret, validare); implicit: fara reduceri/TVA si cu praguri largi. */
   ordering?: OrderingSettings;
   events?: EventBus;
+  /** Furnizorii de plata si ceasul (implicit: mock-urile locale si ceasul real). */
+  payments?: PaymentSettings;
+  clock?: Clock;
 }
 
 /** Aplicatia reala, asamblata pe adaptoare in-memory (fara baza de date), cu bcrypt rapid. */
@@ -43,6 +48,7 @@ export function buildTestApp(options: TestAppOptions = {}): TestApp {
       authRateLimit: { windowMs: 60_000, max: 10_000 },
     },
     checkDatabase: () => Promise.resolve(),
+    payments: { webhookSecret: TEST_WEBHOOK_SECRET },
     ...options,
   });
 

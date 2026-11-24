@@ -4,6 +4,7 @@ import { ConfigError, loadConfig } from '../../src/config';
 const valid = {
   DATABASE_URL: 'postgresql://u:p@localhost:5432/db?schema=public',
   JWT_SECRET: 'a'.repeat(32),
+  PAYMENT_WEBHOOK_SECRET: 'b'.repeat(16),
 };
 
 describe('loadConfig', () => {
@@ -37,6 +38,42 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...example, NODE_ENV: 'production' })).toThrowError(/JWT_SECRET/);
     expect(loadConfig({ ...example, NODE_ENV: 'development' }).JWT_SECRET).toBe(example.JWT_SECRET);
     expect(loadConfig({ ...valid, NODE_ENV: 'production' }).NODE_ENV).toBe('production');
+  });
+
+  describe('PAYMENT_WEBHOOK_SECRET (secretul webhook-urilor de plata)', () => {
+    it('este obligatoriu', () => {
+      const withoutSecret: Record<string, string> = { ...valid };
+      delete withoutSecret['PAYMENT_WEBHOOK_SECRET'];
+      expect(() => loadConfig(withoutSecret)).toThrowError(/PAYMENT_WEBHOOK_SECRET/);
+    });
+
+    it('are cel putin 16 caractere', () => {
+      expect(() => loadConfig({ ...valid, PAYMENT_WEBHOOK_SECRET: 'a'.repeat(15) })).toThrowError(
+        /PAYMENT_WEBHOOK_SECRET/,
+      );
+      expect(
+        loadConfig({ ...valid, PAYMENT_WEBHOOK_SECRET: 'a'.repeat(16) }).PAYMENT_WEBHOOK_SECRET,
+      ).toBe('a'.repeat(16));
+    });
+
+    it('valoarea de exemplu din .env.example nu e permisa in productie (dar merge in dezvoltare)', () => {
+      const example = {
+        ...valid,
+        PAYMENT_WEBHOOK_SECRET: 'replace-me-with-a-random-webhook-secret',
+      };
+      expect(() => loadConfig({ ...example, NODE_ENV: 'production' })).toThrowError(
+        /PAYMENT_WEBHOOK_SECRET/,
+      );
+      expect(loadConfig({ ...example, NODE_ENV: 'development' }).PAYMENT_WEBHOOK_SECRET).toBe(
+        example.PAYMENT_WEBHOOK_SECRET,
+      );
+    });
+
+    it('mesajul de eroare nu dezvaluie valoarea secretului', () => {
+      expect(() =>
+        loadConfig({ ...valid, PAYMENT_WEBHOOK_SECRET: 'scurt-secret' }),
+      ).not.toThrowError(/scurt-secret/);
+    });
   });
 
   it('aplica valori implicite pentru limita de cereri pe /auth', () => {

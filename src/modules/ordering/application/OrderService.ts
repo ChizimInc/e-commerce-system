@@ -19,6 +19,7 @@ import type {
   OrderUseCases,
   PlaceOrderInput,
 } from '../ports/in/OrderUseCases';
+import type { OrderSettlement } from '../ports/in/OrderSettlement';
 import type { CartSource } from '../ports/out/CartSource';
 import type { OrderCatalog } from '../ports/out/OrderCatalog';
 import type { ConsumedCartLine, OrderPlacement } from '../ports/out/OrderPlacement';
@@ -26,8 +27,11 @@ import type { OrderRepository } from '../ports/out/OrderRepository';
 import { aggregateStock } from './stockRequirements';
 import type { CheckoutLine, CheckoutValidator } from './validation/CheckoutValidator';
 
-/** Cazurile de utilizare ale comenzilor: creare din cos, istoric, detalii, schimbare de status (admin). */
-export class OrderService implements OrderUseCases {
+/**
+ * Cazurile de utilizare ale comenzilor: creare din cos, istoric, detalii, schimbare de status (admin)
+ * si, pentru modulul `payments`, decontarea (PAID / REFUNDED) dupa miscarea banilor.
+ */
+export class OrderService implements OrderUseCases, OrderSettlement {
   /**
    * @param validation capul lantului de validare a checkout-ului (Chain of Responsibility), asamblat in
    *   composition root: verigi noi se adauga acolo, fara sa se modifice acest serviciu.
@@ -99,6 +103,30 @@ export class OrderService implements OrderUseCases {
 
   async changeStatus(principal: Principal, orderId: string, target: OrderStatus): Promise<Order> {
     if (principal.role !== 'ADMIN') throw new ForbiddenError();
+    return this.transition(orderId, target, { adminId: principal.userId });
+  }
+
+  find(orderId: string): Promise<Order | null> {
+    return this.orders.findById(orderId);
+  }
+
+  markPaid(orderId: string): Promise<Order> {
+    return this.transition(orderId, 'PAID', { actor: 'payments' });
+  }
+
+  /** Idempotent: o comanda deja rambursata (ex. de ADMIN, sau la a doua procesare a aceleiasi anulari) ramane neschimbata. */
+  async markRefunded(orderId: string): Promise<Order> {
+    const order = await this.orders.findById(orderId);
+    if (order?.status === 'REFUNDED') return order;
+    return this.transition(orderId, 'REFUNDED', { actor: 'payments' });
+  }
+
+  /** Aplica tranzitia ceruta (State o valideaza), o salveaza cu concurenta optimista si abia apoi publica evenimentul. */
+  private async transition(
+    orderId: string,
+    target: OrderStatus,
+    actor: Record<string, string>,
+  ): Promise<Order> {
     const order = await this.orders.findById(orderId);
     if (!order) throw new NotFoundError('Comanda', orderId);
 
@@ -108,7 +136,7 @@ export class OrderService implements OrderUseCases {
       orderId,
       from: order.status,
       to: updated.status,
-      adminId: principal.userId,
+      ...actor,
     });
     await this.emit(eventForOrder(updated, new Date()));
     return updated;

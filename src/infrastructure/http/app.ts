@@ -9,9 +9,11 @@ import express, {
 import swaggerUi from 'swagger-ui-express';
 import { ZodError } from 'zod';
 import {
+  BadGatewayError,
   ConflictError,
   DomainError,
   ForbiddenError,
+  GatewayTimeoutError,
   NotFoundError,
   TooManyRequestsError,
   UnauthorizedError,
@@ -52,6 +54,8 @@ function statusOf(error: DomainError): number {
   if (error instanceof UnauthorizedError) return 401;
   if (error instanceof ForbiddenError) return 403;
   if (error instanceof TooManyRequestsError) return 429;
+  if (error instanceof BadGatewayError) return 502;
+  if (error instanceof GatewayTimeoutError) return 504;
   return 422;
 }
 
@@ -77,7 +81,14 @@ export function createApp({
 }: AppDependencies): Express {
   const app = express();
   app.disable('x-powered-by');
-  app.use(express.json());
+  // Pastram corpul brut: un webhook se verifica pe exact octetii primiti (semnatura nu supravietuieste re-serializarii JSON).
+  app.use(
+    express.json({
+      verify: (req, _res, buffer) => {
+        (req as Request).rawBody = buffer;
+      },
+    }),
+  );
 
   app.get('/health', async (_req: Request, res: Response) => {
     let database: 'up' | 'down' = 'up';
