@@ -73,6 +73,20 @@ import { PaymentProviders } from './modules/payments/application/PaymentProvider
 import { RefundOnOrderCancelled } from './modules/payments/application/RefundOnOrderCancelled';
 import { RefundPayment } from './modules/payments/application/RefundPayment';
 import type { PaymentProviderFactory } from './modules/payments/ports/out/PaymentProviderFactory';
+import { createNotificationsRouter } from './modules/notifications/adapters/http/notifications.routes';
+import { createChannelFactories } from './modules/notifications/adapters/channels/channelFactories';
+import { InMemoryNotificationOutbox } from './modules/notifications/adapters/persistence/InMemoryNotificationOutbox';
+import { InMemoryNotificationPreferenceRepository } from './modules/notifications/adapters/persistence/InMemoryNotificationPreferenceRepository';
+import { PrismaNotificationOutbox } from './modules/notifications/adapters/persistence/PrismaNotificationOutbox';
+import { PrismaNotificationPreferenceRepository } from './modules/notifications/adapters/persistence/PrismaNotificationPreferenceRepository';
+import { NotificationChannels } from './modules/notifications/application/NotificationChannels';
+import { NotificationHistoryService } from './modules/notifications/application/NotificationHistoryService';
+import { NotificationPreferencesService } from './modules/notifications/application/NotificationPreferencesService';
+import { NotificationService } from './modules/notifications/application/NotificationService';
+import { OrderStatusNotifier } from './modules/notifications/application/OrderStatusNotifier';
+import type { NotificationChannelFactory } from './modules/notifications/domain/NotificationChannelFactory';
+import type { NotificationOutbox } from './modules/notifications/ports/out/NotificationOutbox';
+import type { NotificationPreferenceRepository } from './modules/notifications/ports/out/NotificationPreferenceRepository';
 import { ShippingCostQuotesPricing } from './modules/ordering/adapters/shipping/ShippingCostQuotesPricing';
 import { CartUseCasesQuotableCart } from './modules/shipping/adapters/cart/CartUseCasesQuotableCart';
 import { FastCourierAdapter } from './modules/shipping/adapters/couriers/fast/FastCourierAdapter';
@@ -133,6 +147,9 @@ export interface Repositories {
   stockRestoration: StockRestoration;
   payments: PaymentRepository;
   shipments: ShipmentRepository;
+  /** Outbox-ul canalelor simulate, care e si istoricul notificarilor clientului. */
+  notificationOutbox: NotificationOutbox;
+  notificationPreferences: NotificationPreferenceRepository;
 }
 
 /** Adaptoare in-memory: pornesc fara baza de date (teste, demo rapid). */
@@ -151,6 +168,8 @@ export function createInMemoryRepositories(): Repositories {
     stockRestoration: new InMemoryStockRestoration(products),
     payments: new InMemoryPaymentRepository(),
     shipments: new InMemoryShipmentRepository(),
+    notificationOutbox: new InMemoryNotificationOutbox(),
+    notificationPreferences: new InMemoryNotificationPreferenceRepository(),
   };
 }
 
@@ -169,6 +188,8 @@ export function createPrismaRepositories(prisma: PrismaClient): Repositories {
     stockRestoration: new PrismaStockRestoration(prisma, (ids) => products.evict(ids)),
     payments: new PrismaPaymentRepository(prisma),
     shipments: new PrismaShipmentRepository(prisma),
+    notificationOutbox: new PrismaNotificationOutbox(prisma),
+    notificationPreferences: new PrismaNotificationPreferenceRepository(prisma),
   };
 }
 
@@ -239,6 +260,12 @@ export function createMockCouriers(
   };
 }
 
+/** Configurarea notificarilor: optional, fabricile de canale (implicit: email, SMS si push simulate, scriind in outbox). */
+export interface NotificationSettings {
+  /** Testele pot injecta fabrici proprii ca sa observe trimiterile sau sa simuleze erori. */
+  factories?: readonly NotificationChannelFactory[];
+}
+
 export interface ApplicationDependencies {
   logger: Logger;
   repositories: Repositories;
@@ -249,6 +276,7 @@ export interface ApplicationDependencies {
   ordering?: OrderingSettings;
   payments: PaymentSettings;
   shipping?: ShippingSettings;
+  notifications?: NotificationSettings;
   /** Ceasul aplicatiei (plati: momentele tranzitiilor si toleranta webhook-urilor); testele pot injecta unul controlat. */
   clock?: Clock;
   /** Magistrala de evenimente (implicit in-memory); testele pot injecta una proprie ca sa observe evenimentele. */
@@ -268,6 +296,7 @@ export function createApplication({
   ordering = DEFAULT_ORDERING_SETTINGS,
   payments: paymentSettings,
   shipping: shippingSettings = { rates: NO_SHIPPING_RATES },
+  notifications: notificationSettings = {},
   clock = systemClock,
   events = new InMemoryEventBus(logger.child({ module: 'events' })),
 }: ApplicationDependencies): Express {
@@ -318,6 +347,30 @@ export function createApplication({
   new RestockOnOrderCancelled(orderCatalog, repositories.stockRestoration, orderLogger).register(
     events,
   );
+
+  // Notifications: canalele se creeaza prin fabrici (Factory Method), notificarile sunt abstractii separate de canale (Bridge),
+  // iar abonatul (Observer) le declanseaza la evenimentele comenzii. Se inregistreaza INAINTEA rambursarii (modulul `payments`),
+  // ca "comanda anulata" sa apara in istoric inaintea "banii au fost returnati" (rambursarea publica OrderRefunded din handlerul ei).
+  const notificationLogger = logger.child({ module: 'notifications' });
+  const notificationPreferences = new NotificationPreferencesService(
+    repositories.notificationPreferences,
+  );
+  new OrderStatusNotifier(
+    new NotificationService(
+      new NotificationChannels(
+        notificationSettings.factories ??
+          createChannelFactories({
+            outbox: repositories.notificationOutbox,
+            ids,
+            clock,
+            logger: notificationLogger,
+          }),
+      ),
+      notificationPreferences,
+      notificationLogger,
+    ),
+    notificationLogger,
+  ).register(events);
 
   // Shipping: costul livrarii se alege dupa metoda comenzii (Strategy) si intra in totalul comenzii prin `ShippingDecorator`.
   const shippingLogger = logger.child({ module: 'shipping' });
@@ -406,6 +459,11 @@ export function createApplication({
         ),
         getOrderPayment: new GetOrderPayment(payableOrders, repositories.payments),
         webhooks: new HandlePaymentWebhook(providers, repositories.payments, paymentLogger),
+        requireAuth: authentication.requireAuth,
+      }),
+      createNotificationsRouter({
+        history: new NotificationHistoryService(repositories.notificationOutbox),
+        preferences: notificationPreferences,
         requireAuth: authentication.requireAuth,
       }),
       createShippingRouter({

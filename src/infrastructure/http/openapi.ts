@@ -1,6 +1,7 @@
 import { cartOpenApi } from '../../modules/cart/adapters/http/cart.openapi';
 import { catalogOpenApi } from '../../modules/catalog/adapters/http/catalog.openapi';
 import { authOpenApi } from '../../modules/identity/adapters/http/auth.openapi';
+import { notificationsOpenApi } from '../../modules/notifications/adapters/http/notifications.openapi';
 import { ordersOpenApi } from '../../modules/ordering/adapters/http/orders.openapi';
 import { paymentsOpenApi } from '../../modules/payments/adapters/http/payments.openapi';
 import { shippingOpenApi } from '../../modules/shipping/adapters/http/shipping.openapi';
@@ -64,6 +65,7 @@ const fragments: readonly OpenApiFragment[] = [
   ordersOpenApi,
   paymentsOpenApi,
   shippingOpenApi,
+  notificationsOpenApi,
 ];
 
 function buildDocument(parts: readonly OpenApiFragment[]): JsonObject {
