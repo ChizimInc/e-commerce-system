@@ -142,9 +142,10 @@ model Order {
   customerId         String         @map("customer_id") @db.Uuid
   customer           User           @relation(fields: [customerId], references: [id], onDelete: Restrict)
   status             OrderStatus    @default(NEW)
-  // Rezultatul calculului de pret (in cenți): total = subtotal - discount + vat. Pastrate separat, ca sa se vada ce s-a aplicat.
+  // Rezultatul calculului de pret (in cenți): total = subtotal - discount + shipping + vat. Pastrate separat, ca sa se vada ce s-a aplicat.
   subtotalAmount     Int            @map("subtotal_amount")
   discountAmount     Int            @map("discount_amount")
+  shippingAmount     Int            @default(0) @map("shipping_amount")
   vatAmount          Int            @map("vat_amount")
   totalAmount        Int            @map("total_amount")
   currency           Currency
@@ -159,6 +160,7 @@ model Order {
   items              OrderItem[]
   stockRestoration   OrderStockRestoration?
   payment            Payment?
+  shipment           Shipment?
   createdAt          DateTime       @default(now()) @map("created_at")
   updatedAt          DateTime       @updatedAt @map("updated_at")
 
@@ -228,4 +230,40 @@ model Payment {
 
   @@unique([provider, externalId])
   @@map("payments")
+}
+
+enum ShipmentCourier {
+  FAST_COURIER
+  POST_OFFICE
+  STORE_PICKUP
+}
+
+enum ShipmentStatus {
+  PENDING
+  CREATED
+  IN_TRANSIT
+  DELIVERED
+  RETURNED
+  FAILED
+}
+
+// Livrarea unei comenzi: o singura livrare per comanda (order_id UNIQUE), deci doua expedieri simultane ale aceleiasi
+// comenzi nu pot crea doua colete. Costul e in cenți (Int) + moneda, ca in orders. external_id = id-ul coletului la curier
+// (unic per curier); tracking_number = numarul de urmarire afisat clientului. Livrarea nu se sterge odata cu comanda (Restrict).
+model Shipment {
+  id             String          @id @default(uuid()) @db.Uuid
+  orderId        String          @unique @map("order_id") @db.Uuid
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  courier        ShipmentCourier
+  status         ShipmentStatus  @default(PENDING)
+  costAmount     Int             @map("cost_amount") // in cenți
+  currency       Currency
+  externalId     String?         @map("external_id")
+  trackingNumber String?         @map("tracking_number")
+  failureReason  String?         @map("failure_reason")
+  createdAt      DateTime        @default(now()) @map("created_at")
+  updatedAt      DateTime        @updatedAt @map("updated_at")
+
+  @@unique([courier, externalId])
+  @@map("shipments")
 }

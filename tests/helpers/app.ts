@@ -5,6 +5,7 @@ import {
   createInMemoryRepositories,
   type OrderingSettings,
   type PaymentSettings,
+  type ShippingSettings,
   type Repositories,
 } from '../../src/composition-root';
 import { BcryptPasswordHasher } from '../../src/modules/identity/adapters/security/BcryptPasswordHasher';
@@ -32,6 +33,8 @@ export interface TestAppOptions {
   events?: EventBus;
   /** Furnizorii de plata si ceasul (implicit: mock-urile locale si ceasul real). */
   payments?: PaymentSettings;
+  /** Tarifele de livrare si curierii (implicit: livrare gratuita si mock-urile locale). */
+  shipping?: ShippingSettings;
   clock?: Clock;
 }
 

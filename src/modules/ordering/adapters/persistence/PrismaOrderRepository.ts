@@ -18,6 +18,7 @@ export function toOrderCreateInput(order: Order): Prisma.OrderUncheckedCreateInp
     status: order.status,
     subtotalAmount: order.price.subtotal.amount,
     discountAmount: order.price.discount.amount,
+    shippingAmount: order.price.shipping.amount,
     vatAmount: order.price.vat.amount,
     totalAmount: order.price.total.amount,
     currency: order.total.currency,
@@ -68,6 +69,7 @@ function toDomain(row: OrderRow): Order {
     price: PriceBreakdown.restore({
       subtotal: Money.of(row.subtotalAmount, row.currency),
       discount: Money.of(row.discountAmount, row.currency),
+      shipping: Money.of(row.shippingAmount, row.currency),
       vat: Money.of(row.vatAmount, row.currency),
       total: Money.of(row.totalAmount, row.currency),
     }),

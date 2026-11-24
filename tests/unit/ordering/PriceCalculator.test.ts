@@ -5,8 +5,10 @@ import { PriceBreakdown } from '../../../src/modules/ordering/domain/pricing/Pri
 import {
   BasePrice,
   DiscountDecorator,
+  ShippingDecorator,
   VatDecorator,
 } from '../../../src/modules/ordering/domain/pricing/PriceCalculator';
+import type { ShippingPricing } from '../../../src/modules/ordering/domain/pricing/ShippingPricing';
 import {
   NO_PRICE_MODIFIERS,
   priceCalculatorFor,
@@ -156,15 +158,20 @@ describe('calcul de pret (Decorator)', () => {
 
   describe('priceCalculatorFor (politica din configurare)', () => {
     it('fara modificatori, totalul este suma liniilor', () => {
-      const price = priceCalculatorFor([item(10_000, 3)], NO_PRICE_MODIFIERS).calculate();
+      const price = priceCalculatorFor(
+        [item(10_000, 3)],
+        NO_PRICE_MODIFIERS,
+        'STANDARD',
+      ).calculate();
       expect(price.total.amount).toBe(30_000);
     });
 
     it('aplica reducerea, apoi TVA', () => {
-      const price = priceCalculatorFor([item(60_000)], {
-        vatPercent: 19,
-        discountTiers: TIERS,
-      }).calculate();
+      const price = priceCalculatorFor(
+        [item(60_000)],
+        { vatPercent: 19, discountTiers: TIERS },
+        'STANDARD',
+      ).calculate();
       expect(price.discount.amount).toBe(3_000);
       expect(price.vat.amount).toBe(10_830); // 19% din 57.000
       expect(price.total.amount).toBe(67_830);
@@ -172,21 +179,28 @@ describe('calcul de pret (Decorator)', () => {
 
     it('doar TVA sau doar reduceri, dupa configurare', () => {
       expect(
-        priceCalculatorFor([item(60_000)], { vatPercent: 0, discountTiers: TIERS }).calculate().vat
-          .amount,
+        priceCalculatorFor(
+          [item(60_000)],
+          { vatPercent: 0, discountTiers: TIERS },
+          'STANDARD',
+        ).calculate().vat.amount,
       ).toBe(0);
       expect(
-        priceCalculatorFor([item(60_000)], { vatPercent: 19, discountTiers: [] }).calculate()
-          .discount.amount,
+        priceCalculatorFor(
+          [item(60_000)],
+          { vatPercent: 19, discountTiers: [] },
+          'STANDARD',
+        ).calculate().discount.amount,
       ).toBe(0);
     });
 
     it('un calcul care depaseste INTEGER-ul din baza de date e refuzat cu INVALID_ORDER (nu 500)', () => {
       expect(() =>
-        priceCalculatorFor([item(MAX_AMOUNT_CENTS)], {
-          vatPercent: 19,
-          discountTiers: [],
-        }).calculate(),
+        priceCalculatorFor(
+          [item(MAX_AMOUNT_CENTS)],
+          { vatPercent: 19, discountTiers: [] },
+          'STANDARD',
+        ).calculate(),
       ).toThrowError(expect.objectContaining({ code: 'INVALID_ORDER' }) as Error);
     });
   });
@@ -226,5 +240,130 @@ describe('PriceBreakdown', () => {
     expect(() =>
       PriceBreakdown.of({ subtotal: ron(100), discount: Money.of(0, 'EUR'), vat: ron(0) }),
     ).toThrowError(expect.objectContaining({ code: 'MONEY_CURRENCY_MISMATCH' }) as Error);
+  });
+});
+
+/** Decorator (S3): costul livrarii se adauga dupa reducere si inainte de TVA, iar invariantele (cenți, INTEGER) raman. */
+describe('livrarea in total (ShippingDecorator)', () => {
+  const ron = (n: number) => Money.of(n, 'RON');
+  /** Livrare fixa pentru orice comanda: izoleaza decoratorul de strategiile din `shipping`. */
+  const flat = (cents: number): ShippingPricing => ({ costFor: () => ron(cents) });
+
+  it('total = subtotal - reducere + livrare + TVA; TVA se aplica si pe livrare', () => {
+    const price = new VatDecorator(
+      new ShippingDecorator(
+        new DiscountDecorator(new BasePrice([item(60_000)]), TIERS),
+        flat(1_500),
+        { method: 'STANDARD', units: 1 },
+      ),
+      19,
+    ).calculate();
+
+    expect(price.discount.amount).toBe(3_000); // 5% din 600.00
+    expect(price.shipping.amount).toBe(1_500);
+    expect(price.vat.amount).toBe(11_115); // 19% din (57.000 + 1.500)
+    expect(price.total.amount).toBe(60_000 - 3_000 + 1_500 + 11_115);
+  });
+
+  it('cere costul portului cu metoda comenzii, valoarea marfii inainte de reducere si numarul de bucati', () => {
+    const seen: unknown[] = [];
+    const pricing: ShippingPricing = {
+      costFor: (request) => {
+        seen.push(request);
+        return ron(0);
+      },
+    };
+
+    new ShippingDecorator(new DiscountDecorator(new BasePrice([item(60_000, 3)]), TIERS), pricing, {
+      method: 'EXPRESS',
+      units: 3,
+    }).calculate();
+
+    expect(seen).toEqual([{ deliveryMethod: 'EXPRESS', itemsValue: ron(180_000), units: 3 }]);
+  });
+
+  it('priceCalculatorFor include livrarea cu metoda comenzii, doar daca politica are un calcul de livrare', () => {
+    const policy = { vatPercent: 0, discountTiers: [] };
+    const byMethod: ShippingPricing = {
+      costFor: ({ deliveryMethod, units }) => ron(deliveryMethod === 'EXPRESS' ? 100 * units : 0),
+    };
+
+    const express = priceCalculatorFor(
+      [item(1_000, 3)],
+      { ...policy, shipping: byMethod },
+      'EXPRESS',
+    ).calculate();
+    const pickup = priceCalculatorFor(
+      [item(1_000, 3)],
+      { ...policy, shipping: byMethod },
+      'STORE_PICKUP',
+    ).calculate();
+    const unpriced = priceCalculatorFor([item(1_000, 3)], policy, 'EXPRESS').calculate();
+
+    expect([express.shipping.amount, express.total.amount]).toEqual([300, 3_300]);
+    expect([pickup.shipping.amount, pickup.total.amount]).toEqual([0, 3_000]);
+    expect([unpriced.shipping.amount, unpriced.total.amount]).toEqual([0, 3_000]);
+  });
+
+  it('o livrare care ar depasi limita INTEGER a totalului e refuzata cu INVALID_ORDER (nu 500)', () => {
+    expect(() =>
+      new ShippingDecorator(new BasePrice([item(MAX_AMOUNT_CENTS)]), flat(1), {
+        method: 'STANDARD',
+        units: 1,
+      }).calculate(),
+    ).toThrowError(/Totalul comenzii depaseste limita/);
+  });
+
+  it('refuza un cost de livrare negativ, peste limita sau in alta moneda', () => {
+    const calc = (cost: Money) =>
+      new ShippingDecorator(
+        new BasePrice([item(1_000)]),
+        { costFor: () => cost },
+        {
+          method: 'STANDARD',
+          units: 1,
+        },
+      ).calculate();
+
+    expect(() => calc(ron(-1))).toThrowError(/Costul livrarii comenzii nu poate fi negativ/);
+    expect(() => calc(ron(MAX_AMOUNT_CENTS + 1))).toThrowError(/depaseste limita/);
+    expect(() => calc(Money.of(10, 'EUR'))).toThrowError(
+      expect.objectContaining({ code: 'MONEY_CURRENCY_MISMATCH' }) as Error,
+    );
+  });
+
+  describe('PriceBreakdown cu livrare', () => {
+    it('total include livrarea; fara livrare data, aceasta e 0 (comenzile vechi raman valide)', () => {
+      const withShipping = PriceBreakdown.of({
+        subtotal: ron(1_000),
+        discount: ron(100),
+        shipping: ron(150),
+        vat: ron(200),
+      });
+      expect(withShipping.total.amount).toBe(1_250);
+      expect(withShipping.taxableAmount().amount).toBe(1_050);
+      expect(
+        PriceBreakdown.of({ subtotal: ron(1_000), discount: ron(0), vat: ron(0) }).shipping.amount,
+      ).toBe(0);
+    });
+
+    it('restore() verifica ca totalul include livrarea', () => {
+      const parts = { subtotal: ron(1_000), discount: ron(100), shipping: ron(150), vat: ron(200) };
+      expect(PriceBreakdown.restore({ ...parts, total: ron(1_250) }).shipping.amount).toBe(150);
+      expect(() => PriceBreakdown.restore({ ...parts, total: ron(1_100) })).toThrowError(
+        expect.objectContaining({ code: 'INVALID_ORDER' }) as Error,
+      );
+    });
+
+    it('withShipping pastreaza celelalte parti', () => {
+      const price = PriceBreakdown.of({
+        subtotal: ron(1_000),
+        discount: ron(100),
+        vat: ron(0),
+      }).withShipping(ron(50));
+      expect([price.subtotal.amount, price.discount.amount, price.total.amount]).toEqual([
+        1_000, 100, 950,
+      ]);
+    });
   });
 });

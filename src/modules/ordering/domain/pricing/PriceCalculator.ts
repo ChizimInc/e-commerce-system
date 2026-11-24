@@ -1,6 +1,8 @@
 import { DomainError } from '../../../../shared';
 import type { OrderItem } from '../OrderItem';
+import type { DeliveryMethod } from '../OrderTypes';
 import { PriceBreakdown } from './PriceBreakdown';
+import type { ShippingPricing } from './ShippingPricing';
 
 /** Componenta comuna: orice calculator de pret (de baza sau decorat) produce un `PriceBreakdown`. */
 export interface PriceCalculator {
@@ -84,6 +86,27 @@ export class DiscountDecorator extends PriceDecorator {
     );
     if (!tier) return price;
     return price.withDiscount(price.subtotal.percentage(tier.percent));
+  }
+}
+
+// Pattern: Decorator (Structural) – decorator concret: adauga costul livrarii, cerut portului `ShippingPricing` (strategia metodei de livrare); se aplica inaintea TVA, fiindca livrarea se taxeaza
+export class ShippingDecorator extends PriceDecorator {
+  constructor(
+    inner: PriceCalculator,
+    private readonly pricing: ShippingPricing,
+    private readonly delivery: { readonly method: DeliveryMethod; readonly units: number },
+  ) {
+    super(inner);
+  }
+
+  protected decorate(price: PriceBreakdown): PriceBreakdown {
+    return price.withShipping(
+      this.pricing.costFor({
+        deliveryMethod: this.delivery.method,
+        itemsValue: price.subtotal,
+        units: this.delivery.units,
+      }),
+    );
   }
 }
 

@@ -144,6 +144,31 @@ function contract(name: string, create: () => Harness, enabled = true): void {
         expect(listed?.price.total.amount).toBe(56_525);
       });
 
+      it('pastreaza costul livrarii (si totalul care il include) la salvare si reincarcare', async () => {
+        const customerId = await newUser('shipping');
+        const order = buildOrder(
+          customerId,
+          [{ itemId: randomUUID(), quantity: 2, amount: 10_000 }],
+          new Date('2026-01-02T03:04:05.000Z'),
+          {
+            vatPercent: 19,
+            discountTiers: [],
+            shipping: { costFor: () => Money.of(1_500, 'RON') },
+          },
+        );
+        expect(order.price.shipping.amount).toBe(1_500);
+        // TVA se aplica si pe livrare: 19% din (20.000 + 1.500)
+        expect(order.price.vat.amount).toBe(4_085);
+        expect(order.price.total.amount).toBe(25_585);
+        await orders.add(order);
+
+        const loaded = await orders.findById(order.id);
+        expect(loaded?.price.shipping.toJSON()).toEqual({ amount: 1_500, currency: 'RON' });
+        expect(loaded?.price.total.amount).toBe(25_585);
+        const [listed] = (await orders.findByCustomerId({ customerId, limit: 5, offset: 0 })).items;
+        expect(listed?.price.shipping.amount).toBe(1_500);
+      });
+
       it('countByCustomerSince numara doar comenzile clientului din interval (limita inclusa)', async () => {
         const mine = await newUser('count1');
         const other = await newUser('count2');

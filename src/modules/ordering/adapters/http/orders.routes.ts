@@ -34,6 +34,7 @@ export function toOrderResponse(order: Order): z.infer<typeof orderResponseSchem
     })),
     subtotal: order.price.subtotal.toJSON(),
     discount: order.price.discount.toJSON(),
+    shipping: order.price.shipping.toJSON(),
     vat: order.price.vat.toJSON(),
     total: order.total.toJSON(),
     address: order.address.toJSON(),

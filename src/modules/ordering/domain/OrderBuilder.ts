@@ -102,7 +102,7 @@ export class OrderBuilder {
       address,
       deliveryMethod,
       paymentMethod,
-      price: priceCalculatorFor(this.items, policy).calculate(),
+      price: priceCalculatorFor(this.items, policy, deliveryMethod).calculate(),
       createdAt: this.createdAt ?? new Date(),
     });
   }

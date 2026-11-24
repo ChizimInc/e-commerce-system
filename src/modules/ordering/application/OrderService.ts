@@ -19,6 +19,7 @@ import type {
   OrderUseCases,
   PlaceOrderInput,
 } from '../ports/in/OrderUseCases';
+import type { OrderFulfillment } from '../ports/in/OrderFulfillment';
 import type { OrderSettlement } from '../ports/in/OrderSettlement';
 import type { CartSource } from '../ports/out/CartSource';
 import type { OrderCatalog } from '../ports/out/OrderCatalog';
@@ -29,9 +30,10 @@ import type { CheckoutLine, CheckoutValidator } from './validation/CheckoutValid
 
 /**
  * Cazurile de utilizare ale comenzilor: creare din cos, istoric, detalii, schimbare de status (admin)
- * si, pentru modulul `payments`, decontarea (PAID / REFUNDED) dupa miscarea banilor.
+ * si, pentru modulele `payments` si `shipping`, decontarea (PAID / REFUNDED) dupa miscarea banilor, respectiv
+ * expedierea (SHIPPED) dupa ce curierul a preluat coletul.
  */
-export class OrderService implements OrderUseCases, OrderSettlement {
+export class OrderService implements OrderUseCases, OrderSettlement, OrderFulfillment {
   /**
    * @param validation capul lantului de validare a checkout-ului (Chain of Responsibility), asamblat in
    *   composition root: verigi noi se adauga acolo, fara sa se modifice acest serviciu.
@@ -112,6 +114,10 @@ export class OrderService implements OrderUseCases, OrderSettlement {
 
   markPaid(orderId: string): Promise<Order> {
     return this.transition(orderId, 'PAID', { actor: 'payments' });
+  }
+
+  markShipped(orderId: string): Promise<Order> {
+    return this.transition(orderId, 'SHIPPED', { actor: 'shipping' });
   }
 
   /** Idempotent: o comanda deja rambursata (ex. de ADMIN, sau la a doua procesare a aceleiasi anulari) ramane neschimbata. */

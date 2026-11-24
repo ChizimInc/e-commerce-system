@@ -73,6 +73,31 @@ import { PaymentProviders } from './modules/payments/application/PaymentProvider
 import { RefundOnOrderCancelled } from './modules/payments/application/RefundOnOrderCancelled';
 import { RefundPayment } from './modules/payments/application/RefundPayment';
 import type { PaymentProviderFactory } from './modules/payments/ports/out/PaymentProviderFactory';
+import { ShippingCostQuotesPricing } from './modules/ordering/adapters/shipping/ShippingCostQuotesPricing';
+import { CartUseCasesQuotableCart } from './modules/shipping/adapters/cart/CartUseCasesQuotableCart';
+import { FastCourierAdapter } from './modules/shipping/adapters/couriers/fast/FastCourierAdapter';
+import { FastCourierMock } from './modules/shipping/adapters/couriers/fast/FastCourierMock';
+import { PostOfficeAdapter } from './modules/shipping/adapters/couriers/post/PostOfficeAdapter';
+import { PostOfficeMock } from './modules/shipping/adapters/couriers/post/PostOfficeMock';
+import { StorePickupCourier } from './modules/shipping/adapters/couriers/StorePickupCourier';
+import { createShippingRouter } from './modules/shipping/adapters/http/shipping.routes';
+import { OrderFulfillmentShippableOrders } from './modules/shipping/adapters/ordering/OrderFulfillmentShippableOrders';
+import { InMemoryShipmentRepository } from './modules/shipping/adapters/persistence/InMemoryShipmentRepository';
+import { PrismaShipmentRepository } from './modules/shipping/adapters/persistence/PrismaShipmentRepository';
+import { CourierDirectory } from './modules/shipping/application/CourierDirectory';
+import { GetOrderShipment } from './modules/shipping/application/GetOrderShipment';
+import { QuoteCartShipping } from './modules/shipping/application/QuoteCartShipping';
+import { ShipOrder } from './modules/shipping/application/ShipOrder';
+import { ShippingCostService } from './modules/shipping/application/ShippingCostService';
+import {
+  NO_SHIPPING_RATES,
+  STANDARD_SHIPPING_RATES,
+  ShippingCostStrategies,
+  type ShippingRates,
+} from './modules/shipping/domain/ShippingCostStrategy';
+import type { CourierCode } from './modules/shipping/domain/ShippingTypes';
+import type { CourierService } from './modules/shipping/ports/out/CourierService';
+import type { ShipmentRepository } from './modules/shipping/ports/out/ShipmentRepository';
 import type { PaymentRepository } from './modules/payments/ports/out/PaymentRepository';
 import type { OrderRepository } from './modules/ordering/ports/out/OrderRepository';
 import type { StockRestoration } from './modules/ordering/ports/out/StockRestoration';
@@ -107,6 +132,7 @@ export interface Repositories {
   /** Repunerea idempotenta a stocului unei comenzi anulate. */
   stockRestoration: StockRestoration;
   payments: PaymentRepository;
+  shipments: ShipmentRepository;
 }
 
 /** Adaptoare in-memory: pornesc fara baza de date (teste, demo rapid). */
@@ -124,6 +150,7 @@ export function createInMemoryRepositories(): Repositories {
     orderPlacement: new InMemoryOrderPlacement(orders, products, carts),
     stockRestoration: new InMemoryStockRestoration(products),
     payments: new InMemoryPaymentRepository(),
+    shipments: new InMemoryShipmentRepository(),
   };
 }
 
@@ -141,6 +168,7 @@ export function createPrismaRepositories(prisma: PrismaClient): Repositories {
     orderPlacement: new PrismaOrderPlacement(prisma, (ids) => products.evict(ids)),
     stockRestoration: new PrismaStockRestoration(prisma, (ids) => products.evict(ids)),
     payments: new PrismaPaymentRepository(prisma),
+    shipments: new PrismaShipmentRepository(prisma),
   };
 }
 
@@ -189,6 +217,28 @@ export function createMockPaymentFactories(
   ];
 }
 
+/**
+ * Configurarea livrarii: tarifele strategiilor de cost si, optional, serviciile curierilor (implicit: mock-urile locale).
+ * Fara tarife (implicit in teste si demo in-memory) livrarea e gratuita si totalul comenzii nu o include; productia
+ * primeste `STANDARD_SHIPPING_RATES`.
+ */
+export interface ShippingSettings {
+  rates: ShippingRates;
+  /** Serviciile curierilor; testele pot injecta unele proprii ca sa observe apelurile sau sa simuleze erori. */
+  couriers?: Readonly<Record<CourierCode, CourierService>>;
+}
+
+/** Curierii impliciti: doua mock-uri cu API-uri diferite (aduse la `CourierService` prin adaptoare) si ridicarea din magazin. */
+export function createMockCouriers(
+  clock: Clock = systemClock,
+): Record<CourierCode, CourierService> {
+  return {
+    FAST_COURIER: new FastCourierAdapter(new FastCourierMock({ clock })),
+    POST_OFFICE: new PostOfficeAdapter(new PostOfficeMock({ clock })),
+    STORE_PICKUP: new StorePickupCourier(),
+  };
+}
+
 export interface ApplicationDependencies {
   logger: Logger;
   repositories: Repositories;
@@ -198,6 +248,7 @@ export interface ApplicationDependencies {
   ids?: IdGenerator;
   ordering?: OrderingSettings;
   payments: PaymentSettings;
+  shipping?: ShippingSettings;
   /** Ceasul aplicatiei (plati: momentele tranzitiilor si toleranta webhook-urilor); testele pot injecta unul controlat. */
   clock?: Clock;
   /** Magistrala de evenimente (implicit in-memory); testele pot injecta una proprie ca sa observe evenimentele. */
@@ -216,6 +267,7 @@ export function createApplication({
   ids = new RandomUuidGenerator(),
   ordering = DEFAULT_ORDERING_SETTINGS,
   payments: paymentSettings,
+  shipping: shippingSettings = { rates: NO_SHIPPING_RATES },
   clock = systemClock,
   events = new InMemoryEventBus(logger.child({ module: 'events' })),
 }: ApplicationDependencies): Express {
@@ -267,13 +319,23 @@ export function createApplication({
     events,
   );
 
+  // Shipping: costul livrarii se alege dupa metoda comenzii (Strategy) si intra in totalul comenzii prin `ShippingDecorator`.
+  const shippingLogger = logger.child({ module: 'shipping' });
+  const shippingCosts = new ShippingCostService(
+    ShippingCostStrategies.fromRates(shippingSettings.rates),
+  );
+  const pricing = {
+    ...ordering.pricing,
+    shipping: ordering.pricing.shipping ?? new ShippingCostQuotesPricing(shippingCosts),
+  };
+
   const orders = new OrderService(
     repositories.orders,
     new CartServiceSource(cart),
     orderCatalog,
     repositories.orderPlacement,
     checkoutValidation,
-    ordering.pricing,
+    pricing,
     events,
     ids,
     orderLogger,
@@ -294,6 +356,14 @@ export function createApplication({
     refundPayment,
     paymentLogger,
   ).register(events);
+
+  // Curierii se aleg dupa metoda de livrare; `ordering` e vazut doar prin portul de expediere.
+  const couriers = new CourierDirectory(shippingSettings.couriers ?? createMockCouriers(clock), {
+    STANDARD: 'POST_OFFICE',
+    EXPRESS: 'FAST_COURIER',
+    STORE_PICKUP: 'STORE_PICKUP',
+  });
+  const shippableOrders = new OrderFulfillmentShippableOrders(orders);
 
   return createApp({
     logger,
@@ -338,6 +408,30 @@ export function createApplication({
         webhooks: new HandlePaymentWebhook(providers, repositories.payments, paymentLogger),
         requireAuth: authentication.requireAuth,
       }),
+      createShippingRouter({
+        shipOrder: new ShipOrder(
+          shippableOrders,
+          repositories.shipments,
+          couriers,
+          ids,
+          clock,
+          shippingLogger,
+        ),
+        getOrderShipment: new GetOrderShipment(
+          shippableOrders,
+          repositories.shipments,
+          couriers,
+          clock,
+          shippingLogger,
+        ),
+        quoteShipping: new QuoteCartShipping(
+          new CartUseCasesQuotableCart(cart),
+          shippingCosts,
+          couriers,
+        ),
+        requireAuth: authentication.requireAuth,
+        requireAdmin: authentication.requireRole('ADMIN'),
+      }),
     ],
   });
 }
@@ -366,6 +460,7 @@ export function createContainer(config: Config): Container {
       await prisma.$queryRaw`SELECT 1`;
     },
     payments: { webhookSecret: config.PAYMENT_WEBHOOK_SECRET },
+    shipping: { rates: STANDARD_SHIPPING_RATES },
     ordering: {
       pricing: { vatPercent: config.VAT_PERCENT, discountTiers: config.DISCOUNT_TIERS },
       allowedCountries: config.SHIPPING_COUNTRIES,
