@@ -1,6 +1,7 @@
 import { cartOpenApi } from '../../modules/cart/adapters/http/cart.openapi';
 import { catalogOpenApi } from '../../modules/catalog/adapters/http/catalog.openapi';
 import { authOpenApi } from '../../modules/identity/adapters/http/auth.openapi';
+import { ordersOpenApi } from '../../modules/ordering/adapters/http/orders.openapi';
 import { errorResponseSchema } from './common-schemas';
 import { schemaOf, type JsonObject, type OpenApiFragment } from './openapi-helpers';
 
@@ -58,6 +59,7 @@ const fragments: readonly OpenApiFragment[] = [
   authOpenApi,
   catalogOpenApi,
   cartOpenApi,
+  ordersOpenApi,
 ];
 
 function buildDocument(parts: readonly OpenApiFragment[]): JsonObject {

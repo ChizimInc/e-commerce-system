@@ -23,6 +23,24 @@ function bundle(overrides: Partial<Parameters<typeof Bundle.create>[0]> = {}): B
 }
 
 // Composite (S5): Product (frunza) si Bundle (compus) se folosesc prin aceeasi interfata CatalogItem.
+describe('Bundle.stockRequirements (Composite)', () => {
+  it('un pachet consuma componentele lui, recursiv, cu cantitatile inmultite', () => {
+    const inner = bundle({ id: uuid(101) }); // 1 x mouse + 2 x tastatura
+    const outer = bundle({
+      id: uuid(102),
+      components: [
+        { item: inner, quantity: 3 },
+        { item: pad, quantity: 1 },
+      ],
+    });
+    expect(outer.stockRequirements()).toEqual([
+      { productId: uuid(1), quantity: 3 },
+      { productId: uuid(2), quantity: 6 },
+      { productId: uuid(3), quantity: 1 },
+    ]);
+  });
+});
+
 describe('Bundle (Composite)', () => {
   it('calculeaza pretul din componente: suma (pret x cantitate)', () => {
     expect(

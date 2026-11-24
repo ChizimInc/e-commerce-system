@@ -1,5 +1,5 @@
 import { DomainError, type Money } from '../../../shared';
-import type { CatalogItem } from './CatalogItem';
+import type { CatalogItem, StockRequirement } from './CatalogItem';
 import { Product } from './Product';
 import { optionalText, requireIntegerInRange, requireText } from './validation';
 
@@ -112,6 +112,16 @@ export class Bundle implements CatalogItem {
       ...this.components.map((component) =>
         Math.floor(component.item.availableStock() / component.quantity),
       ),
+    );
+  }
+
+  /** Stocul consumat pentru un pachet: cel al componentelor, cu cantitatile inmultite (recursiv pentru pachete imbricate). */
+  stockRequirements(): StockRequirement[] {
+    return this.components.flatMap((component) =>
+      component.item.stockRequirements().map((part) => ({
+        productId: part.productId,
+        quantity: part.quantity * component.quantity,
+      })),
     );
   }
 

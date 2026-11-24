@@ -30,6 +30,16 @@ import { BcryptPasswordHasher } from './modules/identity/adapters/security/Bcryp
 import { JwtTokenService } from './modules/identity/adapters/security/JwtTokenService';
 import { AuthService } from './modules/identity/application/AuthService';
 import type { UserRepository } from './modules/identity/ports/out/UserRepository';
+import { createOrdersRouter } from './modules/ordering/adapters/http/orders.routes';
+import { CartServiceSource } from './modules/ordering/adapters/cart/CartServiceSource';
+import { CatalogOrderLookup } from './modules/ordering/adapters/catalog/CatalogOrderLookup';
+import { InMemoryOrderPlacement } from './modules/ordering/adapters/persistence/InMemoryOrderPlacement';
+import { InMemoryOrderRepository } from './modules/ordering/adapters/persistence/InMemoryOrderRepository';
+import { PrismaOrderPlacement } from './modules/ordering/adapters/persistence/PrismaOrderPlacement';
+import { PrismaOrderRepository } from './modules/ordering/adapters/persistence/PrismaOrderRepository';
+import { OrderService } from './modules/ordering/application/OrderService';
+import type { OrderPlacement } from './modules/ordering/ports/out/OrderPlacement';
+import type { OrderRepository } from './modules/ordering/ports/out/OrderRepository';
 import { ConsoleLogger, RandomUuidGenerator, type IdGenerator, type Logger } from './shared';
 
 export interface Container {
@@ -46,28 +56,39 @@ export interface Repositories {
   bundles: BundleRepository;
   users: UserRepository;
   carts: CartRepository;
+  orders: OrderRepository;
+  /** Plasarea atomica a comenzilor (stoc + comanda + cos); depinde de adaptoarele de mai sus. */
+  orderPlacement: OrderPlacement;
 }
 
 /** Adaptoare in-memory: pornesc fara baza de date (teste, demo rapid). */
 export function createInMemoryRepositories(): Repositories {
   const products = new InMemoryProductRepository();
+  const carts = new InMemoryCartRepository();
+  const orders = new InMemoryOrderRepository();
   return {
     products,
     categories: new InMemoryCategoryRepository(),
     bundles: new InMemoryBundleRepository(products),
     users: new InMemoryUserRepository(),
-    carts: new InMemoryCartRepository(),
+    carts,
+    orders,
+    orderPlacement: new InMemoryOrderPlacement(orders, products, carts),
   };
 }
 
 /** Adaptoare Prisma/PostgreSQL; citirile de produse trec printr-un proxy cu cache. */
 export function createPrismaRepositories(prisma: PrismaClient): Repositories {
+  const products = new CachingProductRepository(new PrismaProductRepository(prisma));
   return {
-    products: new CachingProductRepository(new PrismaProductRepository(prisma)),
+    products,
     categories: new PrismaCategoryRepository(prisma),
     bundles: new PrismaBundleRepository(prisma),
     users: new PrismaUserRepository(prisma),
     carts: new PrismaCartRepository(prisma),
+    orders: new PrismaOrderRepository(prisma),
+    // Plasarea unei comenzi scade stocul direct in baza de date, pe langa proxy: invalidam cache-ul.
+    orderPlacement: new PrismaOrderPlacement(prisma, (ids) => products.evict(ids)),
   };
 }
 
@@ -128,6 +149,16 @@ export function createApplication({
   // Cart
   const cart = new CartService(repositories.carts, new CatalogItemLookup(catalogQueries), ids);
 
+  // Ordering
+  const orders = new OrderService(
+    repositories.orders,
+    new CartServiceSource(cart),
+    new CatalogOrderLookup(catalogQueries),
+    repositories.orderPlacement,
+    ids,
+    logger.child({ module: 'ordering' }),
+  );
+
   return createApp({
     logger,
     checkDatabase,
@@ -152,6 +183,11 @@ export function createApplication({
         },
       }),
       createCartRouter({ cart, requireAuth: authentication.requireAuth }),
+      createOrdersRouter({
+        orders,
+        requireAuth: authentication.requireAuth,
+        requireAdmin: authentication.requireRole('ADMIN'),
+      }),
     ],
   });
 }

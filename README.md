@@ -65,8 +65,25 @@ npm run build && npm start   # producție (din dist/)
 | Catalog (citire) | `GET /products?q=&categoryId=&limit=&offset=`, `GET /products/:id`, `GET /categories`, `GET /bundles`, `GET /bundles/:id` | public                         |
 | Catalog (admin)  | `POST/PATCH/DELETE /products`, `/categories`, `/bundles`                                                                  | ADMIN                          |
 | Coș              | `GET /cart`, `POST /cart/items`, `PATCH /cart/items/:itemId`, `DELETE /cart/items/:itemId`, `DELETE /cart`                | autentificat                   |
+| Comenzi          | `POST /orders`, `GET /orders?limit=&offset=`, `GET /orders/:id`                                                           | autentificat (doar ale lui)    |
+| Comenzi (admin)  | `PATCH /orders/:id/status`                                                                                                | ADMIN                          |
 
 Detalii, scheme și exemple: Swagger UI la `/docs`.
+
+### Comenzi și ciclul de viață
+
+`POST /orders` creează o comandă din coșul utilizatorului (corp: `address`, `deliveryMethod`, `paymentMethod`). Prețurile și numele se **copiază** în comandă la momentul creării; stocul se scade (pentru pachete, din componente), comanda se salvează și liniile comandate se scot din coș, **într-o singură tranzacție**. Clientul vede doar comenzile lui (comanda altcuiva răspunde **404**, ca una inexistentă); ADMIN poate vedea orice comandă.
+
+Statusul se schimbă doar de ADMIN, prin `PATCH /orders/:id/status` cu `{ "status": "PAID" }`. Tranzițiile permise (State):
+
+```
+NEW ──► PAID ──► SHIPPED ──► DELIVERED
+ │       │
+ │       └──► CANCELLED ──► REFUNDED   (rambursare doar dacă a fost plătită)
+ └──────────► CANCELLED
+```
+
+Orice altă tranziție răspunde **422** cu codul `INVALID_ORDER_TRANSITION`. Metodele de livrare (`STANDARD`, `EXPRESS`, `STORE_PICKUP`) și de plată (`CARD`, `PAYPAL`, `CASH_ON_DELIVERY`) sunt deocamdată simple valori; logica lor vine în Iterațiile 4-5.
 
 ## Teste și calitatea codului
 
@@ -97,11 +114,13 @@ Regula dependențelor: `adapters → application → domain`; domeniul nu import
 
 ## Design patterns implementate până acum
 
-| Pattern                                                             | Categorie  | Fișier                                                                                                 |
-| ------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------ |
-| Composite (`Product` frunză, `Bundle` compus, ambele `CatalogItem`) | Structural | [Product.ts](src/modules/catalog/domain/Product.ts), [Bundle.ts](src/modules/catalog/domain/Bundle.ts) |
-| Proxy cu cache (`CachingProductRepository`)                         | Structural | [CachingProductRepository.ts](src/modules/catalog/adapters/persistence/CachingProductRepository.ts)    |
-| Proxy de protecție (`AuthorizationProxy`)                           | Structural | [AuthorizationProxy.ts](src/modules/catalog/application/AuthorizationProxy.ts)                         |
+| Pattern                                                                                              | Categorie      | Fișier                                                                                                 |
+| ---------------------------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------ |
+| Composite (`Product` frunză, `Bundle` compus, ambele `CatalogItem`)                                  | Structural     | [Product.ts](src/modules/catalog/domain/Product.ts), [Bundle.ts](src/modules/catalog/domain/Bundle.ts) |
+| Proxy cu cache (`CachingProductRepository`)                                                          | Structural     | [CachingProductRepository.ts](src/modules/catalog/adapters/persistence/CachingProductRepository.ts)    |
+| Proxy de protecție (`AuthorizationProxy`)                                                            | Structural     | [AuthorizationProxy.ts](src/modules/catalog/application/AuthorizationProxy.ts)                         |
+| Builder (`OrderBuilder`)                                                                             | Creațional     | [OrderBuilder.ts](src/modules/ordering/domain/OrderBuilder.ts)                                         |
+| State (`NewState`, `PaidState`, `ShippedState`, `DeliveredState`, `CancelledState`, `RefundedState`) | Comportamental | [state/](src/modules/ordering/domain/state)                                                            |
 
 ## Limitări cunoscute (Iterațiile 1-2)
 
@@ -111,3 +130,17 @@ Regula dependențelor: `adapters → application → domain`; domeniul nu import
 - **Verificările de integritate din administrare** (ciclu de categorii, nume unic pe nivel) sunt citire-apoi-scriere, fără constrângeri în baza de date; conflictele de tip cheie străină sau unicitate sunt traduse în **409**, dar două cereri concurente pot trece amândouă de verificarea de ciclu.
 - `GET /categories`, `GET /bundles` nu sunt paginate (volum mic de date așteptat).
 - Pachetele imbricate există în domeniu (Composite recursiv), dar se salvează doar pachete formate din produse simple.
+
+## Limitări cunoscute (Iterația 3, partea A)
+
+- **Anularea nu repune stocul**: stocul se scade la creare, dar o comandă anulată/rambursată nu îl restituie încă (apare cu evenimentele de domeniu, partea B).
+- **Plata și livrarea sunt doar stări**: `PAID`/`SHIPPED` se setează de ADMIN manual, fără procesator de plată sau curier (Iterațiile 4-5); totalul comenzii e suma liniilor, fără reduceri, taxe sau cost de livrare (partea B).
+- **Fără acțiuni ale clientului asupra comenzii**: clientul nu poate anula singur o comandă; nu există listare a tuturor comenzilor pentru ADMIN (doar detalii după id).
+- **Comanda nu păstrează istoricul tranzițiilor** (doar statusul curent și `paidAt`); auditul apare cu Command + istoric în Iterația 6.
+- **Cache-ul de produse** se invalidează la plasarea unei comenzi doar în procesul curent (vezi limitarea cache-ului local de mai sus).
+- **Totalul unei comenzi e limitat la 21.474.836,47** (ce încape într-un `INTEGER` PostgreSQL); peste limită comanda e refuzată cu **422**.
+- **Coșul rămâne „ultima scriere câștigă”**: dacă același utilizator modifică coșul în paralel cu plasarea comenzii, un articol deja comandat poate reapărea în coș; la o nouă comandă stocul se scade din nou. Plasarea în sine nu pierde date (coșul modificat între timp oprește comanda cu **409** `CART_CHANGED`).
+- **Prețul copiat în comandă vine din catalog (cache local, TTL 60 s)**: cu mai multe instanțe, un preț schimbat de ADMIN poate fi copiat cu întârziere de până la 60 s.
+- **Comenzile salvate se reconstruiesc cu aceleași validări ca la creare**: o limită înăsprită ulterior ar putea face ilizibile comenzile vechi (la schimbarea limitelor e nevoie de migrare).
+- **Erorile Prisma neașteptate se loghează cu mesajul lor**, care poate conține argumentele interogării (inclusiv adresa de livrare); în producție logurile trebuie tratate ca date personale.
+- **Referințele din comandă către produs/pachet nu au cheie străină** (produsul poate fi șters ulterior; comanda își păstrează numele și prețul copiate).

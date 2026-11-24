@@ -23,6 +23,7 @@ model User {
   role         Role     @default(CUSTOMER)
   createdAt    DateTime @default(now()) @map("created_at")
   cart         Cart?
+  orders       Order[]
 
   @@map("users")
 }
@@ -111,4 +112,65 @@ model CartItem {
 
   @@id([cartId, itemId])
   @@map("cart_items")
+}
+
+enum OrderStatus {
+  NEW
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum DeliveryMethod {
+  STANDARD
+  EXPRESS
+  STORE_PICKUP
+}
+
+enum PaymentMethod {
+  CARD
+  PAYPAL
+  CASH_ON_DELIVERY
+}
+
+// Comanda. Totalul e in cenți (Int) + moneda; adresa de livrare e un value object, stocat in coloane (prefix shipping_).
+// paid_at ramane setat si dupa anulare: arata ca o comanda anulata a fost platita (deci e rambursabila).
+model Order {
+  id                 String         @id @default(uuid()) @db.Uuid
+  customerId         String         @map("customer_id") @db.Uuid
+  customer           User           @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  status             OrderStatus    @default(NEW)
+  totalAmount        Int            @map("total_amount") // in cenți
+  currency           Currency
+  deliveryMethod     DeliveryMethod @map("delivery_method")
+  paymentMethod      PaymentMethod  @map("payment_method")
+  shippingRecipient  String         @map("shipping_recipient")
+  shippingStreet     String         @map("shipping_street")
+  shippingCity       String         @map("shipping_city")
+  shippingPostalCode String         @map("shipping_postal_code")
+  shippingCountry    String         @map("shipping_country")
+  paidAt             DateTime?      @map("paid_at")
+  items              OrderItem[]
+  createdAt          DateTime       @default(now()) @map("created_at")
+  updatedAt          DateTime       @updatedAt @map("updated_at")
+
+  @@index([customerId, createdAt])
+  @@map("orders")
+}
+
+// Linie de comanda: instantaneu al produsului la momentul comenzii (nume + pret copiate). item_id nu are FK:
+// produsul/pachetul poate fi sters ulterior, iar comanda trebuie sa ramana intreaga.
+model OrderItem {
+  orderId         String @map("order_id") @db.Uuid
+  itemId          String @map("item_id") @db.Uuid
+  name            String
+  unitPriceAmount Int    @map("unit_price_amount") // in cenți
+  quantity        Int
+  position        Int // ordinea din comanda
+  order           Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@id([orderId, itemId])
+  @@map("order_items")
 }

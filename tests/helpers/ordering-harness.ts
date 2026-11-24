@@ -1,0 +1,74 @@
+import { CartServiceSource } from '../../src/modules/ordering/adapters/cart/CartServiceSource';
+import { CatalogOrderLookup } from '../../src/modules/ordering/adapters/catalog/CatalogOrderLookup';
+import { InMemoryOrderPlacement } from '../../src/modules/ordering/adapters/persistence/InMemoryOrderPlacement';
+import { InMemoryOrderRepository } from '../../src/modules/ordering/adapters/persistence/InMemoryOrderRepository';
+import { OrderService } from '../../src/modules/ordering/application/OrderService';
+import type { PlaceOrderInput } from '../../src/modules/ordering/ports/in/OrderUseCases';
+import { CatalogItemLookup } from '../../src/modules/cart/adapters/catalog/CatalogItemLookup';
+import { InMemoryCartRepository } from '../../src/modules/cart/adapters/persistence/InMemoryCartRepository';
+import { CartService } from '../../src/modules/cart/application/CartService';
+import { InMemoryBundleRepository } from '../../src/modules/catalog/adapters/persistence/InMemoryBundleRepository';
+import { InMemoryCategoryRepository } from '../../src/modules/catalog/adapters/persistence/InMemoryCategoryRepository';
+import { InMemoryProductRepository } from '../../src/modules/catalog/adapters/persistence/InMemoryProductRepository';
+import { CatalogQueryService } from '../../src/modules/catalog/application/CatalogQueryService';
+import { Bundle } from '../../src/modules/catalog/domain/Bundle';
+import type { Principal } from '../../src/shared';
+import { ADDRESS_PROPS } from './order-fixtures';
+import { SequentialIdGenerator, uuid } from './ids';
+import { silentLogger } from './silent-logger';
+
+export const customer = (n: number): Principal => ({ userId: uuid(900 + n), role: 'CUSTOMER' });
+export const admin: Principal = { userId: uuid(990), role: 'ADMIN' };
+
+export const PLACE_INPUT: PlaceOrderInput = {
+  address: ADDRESS_PROPS,
+  deliveryMethod: 'STANDARD',
+  paymentMethod: 'CARD',
+};
+
+/** Modulul `ordering` asamblat pe adaptoare in-memory, impreuna cu catalogul si cosul de care depinde. */
+export function buildOrderingHarness() {
+  const products = new InMemoryProductRepository();
+  const bundles = new InMemoryBundleRepository(products);
+  const carts = new InMemoryCartRepository();
+  const orders = new InMemoryOrderRepository();
+  const catalog = new CatalogQueryService(products, new InMemoryCategoryRepository(), bundles);
+  const cart = new CartService(
+    carts,
+    new CatalogItemLookup(catalog),
+    new SequentialIdGenerator(2000),
+  );
+  const placement = new InMemoryOrderPlacement(orders, products, carts);
+  const service = new OrderService(
+    orders,
+    new CartServiceSource(cart),
+    new CatalogOrderLookup(catalog),
+    placement,
+    new SequentialIdGenerator(5000),
+    silentLogger,
+  );
+
+  const stockOf = async (productId: string): Promise<number> =>
+    (await products.findById(productId))?.stock ?? -1;
+
+  const saveBundle = async (
+    id: string,
+    parts: { productId: string; quantity: number }[],
+    discountPercent = 0,
+  ): Promise<void> => {
+    const components = await Promise.all(
+      parts.map(async ({ productId, quantity }) => {
+        const item = await products.findById(productId);
+        if (!item) throw new Error(`produs lipsa ${productId}`);
+        return { item, quantity };
+      }),
+    );
+    await bundles.save(
+      Bundle.create({ id, name: 'Pachet', description: '', discountPercent, components }),
+    );
+  };
+
+  return { products, bundles, carts, orders, cart, placement, service, stockOf, saveBundle };
+}
+
+export type OrderingHarness = ReturnType<typeof buildOrderingHarness>;

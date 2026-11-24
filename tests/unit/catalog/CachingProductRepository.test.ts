@@ -189,4 +189,23 @@ describe('CachingProductRepository (Proxy)', () => {
     await real.save(makeProduct({ id: uuid(1), categoryId: uuid(5) }));
     expect(await cached.countByCategories([uuid(5)])).toBe(1);
   });
+  it('evict() invalideaza produsele si listele schimbate fara sa treaca prin proxy (ex. scaderea stocului la comanda)', async () => {
+    const real = new CountingRepository();
+    await real.save(makeProduct({ id: uuid(1), name: 'A', stock: 5 }));
+    await real.save(makeProduct({ id: uuid(2), name: 'B', stock: 5 }));
+    const cached = new CachingProductRepository(real);
+    await cached.findById(uuid(1));
+    await cached.findById(uuid(2));
+    await cached.findMany(listAll);
+
+    // Stocul se schimba direct in repository-ul real (ocolind proxy-ul).
+    await real.save(makeProduct({ id: uuid(1), name: 'A', stock: 1 }));
+    expect((await cached.findById(uuid(1)))?.stock).toBe(5); // inca din cache (invechit)
+
+    cached.evict([uuid(1)]);
+
+    expect((await cached.findById(uuid(1)))?.stock).toBe(1);
+    expect((await cached.findMany(listAll)).items.find((p) => p.id === uuid(1))?.stock).toBe(1);
+    expect(real.calls.findById).toBe(3); // produsul 2 a ramas in cache: doar produsul 1 a fost recitit
+  });
 });

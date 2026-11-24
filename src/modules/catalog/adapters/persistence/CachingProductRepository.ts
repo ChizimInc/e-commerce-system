@@ -97,10 +97,18 @@ export class CachingProductRepository implements ProductRepository {
     return this.target.countByCategories(categoryIds);
   }
 
+  /**
+   * Invalidare din exterior: produsele s-au schimbat fara sa treaca prin acest proxy
+   * (ex. plasarea unei comenzi le scade stocul direct in baza de date).
+   */
+  evict(ids: readonly string[]): void {
+    this.invalidate(...ids);
+  }
+
   /** Orice scriere invalideaza produsul si toate listele (pot contine produsul sau ordinea lui). */
-  private invalidate(id: string): void {
+  private invalidate(...ids: string[]): void {
     this.generation++;
-    this.byId.delete(id);
+    for (const id of ids) this.byId.delete(id);
     this.lists.clear();
   }
 

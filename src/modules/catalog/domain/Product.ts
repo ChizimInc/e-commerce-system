@@ -1,5 +1,5 @@
 import { DomainError, type Money } from '../../../shared';
-import type { CatalogItem } from './CatalogItem';
+import type { CatalogItem, StockRequirement } from './CatalogItem';
 import { optionalText, requireIntegerInRange, requireText } from './validation';
 
 export const MAX_PRICE_CENTS = 1_000_000_000;
@@ -61,6 +61,10 @@ export class Product implements CatalogItem {
 
   availableStock(): number {
     return this.stock;
+  }
+
+  stockRequirements(): StockRequirement[] {
+    return [{ productId: this.id, quantity: 1 }];
   }
 
   /** Produsele sunt imutabile: o modificare intoarce o copie validata. */

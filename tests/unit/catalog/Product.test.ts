@@ -4,6 +4,12 @@ import { Product } from '../../../src/modules/catalog/domain/Product';
 import { makeProduct } from '../../helpers/catalog-fixtures';
 
 describe('Product', () => {
+  it('stockRequirements: un produs consuma propriul stoc, cate o bucata', () => {
+    expect(makeProduct({ id: 'p-1' }).stockRequirements()).toEqual([
+      { productId: 'p-1', quantity: 1 },
+    ]);
+  });
+
   it('expune pretul si stocul prin interfata CatalogItem', () => {
     const product = makeProduct({ amount: 2599, stock: 7 });
     expect(product.getPrice().equals(Money.of(2599, 'RON'))).toBe(true);
