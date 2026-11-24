@@ -142,7 +142,11 @@ model Order {
   customerId         String         @map("customer_id") @db.Uuid
   customer           User           @relation(fields: [customerId], references: [id], onDelete: Restrict)
   status             OrderStatus    @default(NEW)
-  totalAmount        Int            @map("total_amount") // in cenți
+  // Rezultatul calculului de pret (in cenți): total = subtotal - discount + vat. Pastrate separat, ca sa se vada ce s-a aplicat.
+  subtotalAmount     Int            @map("subtotal_amount")
+  discountAmount     Int            @map("discount_amount")
+  vatAmount          Int            @map("vat_amount")
+  totalAmount        Int            @map("total_amount")
   currency           Currency
   deliveryMethod     DeliveryMethod @map("delivery_method")
   paymentMethod      PaymentMethod  @map("payment_method")
@@ -153,6 +157,7 @@ model Order {
   shippingCountry    String         @map("shipping_country")
   paidAt             DateTime?      @map("paid_at")
   items              OrderItem[]
+  stockRestoration   OrderStockRestoration?
   createdAt          DateTime       @default(now()) @map("created_at")
   updatedAt          DateTime       @updatedAt @map("updated_at")
 
@@ -173,4 +178,14 @@ model OrderItem {
 
   @@id([orderId, itemId])
   @@map("order_items")
+}
+
+// Marcheaza comenzile al caror stoc a fost deja repus dupa anulare: face repunerea idempotenta
+// (inserarea si cresterea stocului se fac in aceeasi tranzactie, iar cheia primara opreste a doua repunere).
+model OrderStockRestoration {
+  orderId    String   @id @map("order_id") @db.Uuid
+  order      Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  restoredAt DateTime @default(now()) @map("restored_at")
+
+  @@map("order_stock_restorations")
 }

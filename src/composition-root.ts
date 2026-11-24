@@ -36,11 +36,36 @@ import { CatalogOrderLookup } from './modules/ordering/adapters/catalog/CatalogO
 import { InMemoryOrderPlacement } from './modules/ordering/adapters/persistence/InMemoryOrderPlacement';
 import { InMemoryOrderRepository } from './modules/ordering/adapters/persistence/InMemoryOrderRepository';
 import { PrismaOrderPlacement } from './modules/ordering/adapters/persistence/PrismaOrderPlacement';
+import { InMemoryStockRestoration } from './modules/ordering/adapters/persistence/InMemoryStockRestoration';
 import { PrismaOrderRepository } from './modules/ordering/adapters/persistence/PrismaOrderRepository';
+import { PrismaStockRestoration } from './modules/ordering/adapters/persistence/PrismaStockRestoration';
+import { OrderEventLogger } from './modules/ordering/application/OrderEventLogger';
 import { OrderService } from './modules/ordering/application/OrderService';
+import { RestockOnOrderCancelled } from './modules/ordering/application/RestockOnOrderCancelled';
+import { chainOf } from './modules/ordering/application/validation/CheckoutValidator';
+import {
+  AddressValidator,
+  AmountLimitValidator,
+  FraudCheckValidator,
+  StockValidator,
+  type FraudRules,
+} from './modules/ordering/application/validation/validators';
+import { MAX_AMOUNT_CENTS } from './modules/ordering/domain/OrderItem';
+import {
+  NO_PRICE_MODIFIERS,
+  type PricingPolicy,
+} from './modules/ordering/domain/pricing/PricingPolicy';
 import type { OrderPlacement } from './modules/ordering/ports/out/OrderPlacement';
 import type { OrderRepository } from './modules/ordering/ports/out/OrderRepository';
-import { ConsoleLogger, RandomUuidGenerator, type IdGenerator, type Logger } from './shared';
+import type { StockRestoration } from './modules/ordering/ports/out/StockRestoration';
+import {
+  ConsoleLogger,
+  InMemoryEventBus,
+  RandomUuidGenerator,
+  type EventBus,
+  type IdGenerator,
+  type Logger,
+} from './shared';
 
 export interface Container {
   config: Config;
@@ -59,6 +84,8 @@ export interface Repositories {
   orders: OrderRepository;
   /** Plasarea atomica a comenzilor (stoc + comanda + cos); depinde de adaptoarele de mai sus. */
   orderPlacement: OrderPlacement;
+  /** Repunerea idempotenta a stocului unei comenzi anulate. */
+  stockRestoration: StockRestoration;
 }
 
 /** Adaptoare in-memory: pornesc fara baza de date (teste, demo rapid). */
@@ -74,6 +101,7 @@ export function createInMemoryRepositories(): Repositories {
     carts,
     orders,
     orderPlacement: new InMemoryOrderPlacement(orders, products, carts),
+    stockRestoration: new InMemoryStockRestoration(products),
   };
 }
 
@@ -89,6 +117,7 @@ export function createPrismaRepositories(prisma: PrismaClient): Repositories {
     orders: new PrismaOrderRepository(prisma),
     // Plasarea unei comenzi scade stocul direct in baza de date, pe langa proxy: invalidam cache-ul.
     orderPlacement: new PrismaOrderPlacement(prisma, (ids) => products.evict(ids)),
+    stockRestoration: new PrismaStockRestoration(prisma, (ids) => products.evict(ids)),
   };
 }
 
@@ -100,6 +129,24 @@ export interface SecuritySettings {
   authRateLimit: { windowMs: number; max: number };
 }
 
+/** Regulile de business ale comenzilor, venite din configurare (pret, lantul de validare). */
+export interface OrderingSettings {
+  pricing: PricingPolicy;
+  /** Tarile in care se livreaza (coduri ISO de 2 litere). */
+  allowedCountries: readonly string[];
+  /** Totalul maxim al unei comenzi, in cenți. */
+  maxOrderAmountCents: number;
+  fraud: FraudRules;
+}
+
+/** Fara reduceri sau TVA si cu praguri largi: pentru teste si demo in-memory (productia primeste valorile din `config`). */
+export const DEFAULT_ORDERING_SETTINGS: OrderingSettings = {
+  pricing: NO_PRICE_MODIFIERS,
+  allowedCountries: ['RO', 'MD'],
+  maxOrderAmountCents: MAX_AMOUNT_CENTS,
+  fraud: { maxOrdersPerWindow: 1000, windowMs: 60_000, suspiciousAmountCents: MAX_AMOUNT_CENTS },
+};
+
 export interface ApplicationDependencies {
   logger: Logger;
   repositories: Repositories;
@@ -107,6 +154,9 @@ export interface ApplicationDependencies {
   checkDatabase: () => Promise<void>;
   /** Generatorul de id-uri (implicit UUID aleatoriu; testele pot injecta unul determinist). */
   ids?: IdGenerator;
+  ordering?: OrderingSettings;
+  /** Magistrala de evenimente (implicit in-memory); testele pot injecta una proprie ca sa observe evenimentele. */
+  events?: EventBus;
 }
 
 /**
@@ -119,6 +169,8 @@ export function createApplication({
   security,
   checkDatabase,
   ids = new RandomUuidGenerator(),
+  ordering = DEFAULT_ORDERING_SETTINGS,
+  events = new InMemoryEventBus(logger.child({ module: 'events' })),
 }: ApplicationDependencies): Express {
   // Identity
   const tokens = new JwtTokenService(security.jwtSecret, security.jwtExpiresInSeconds);
@@ -150,13 +202,34 @@ export function createApplication({
   const cart = new CartService(repositories.carts, new CatalogItemLookup(catalogQueries), ids);
 
   // Ordering
+  const orderCatalog = new CatalogOrderLookup(catalogQueries);
+  const orderLogger = logger.child({ module: 'ordering' });
+
+  // Lantul de validare a checkout-ului (Chain of Responsibility): o veriga noua se adauga aici,
+  // in ordinea dorita, fara sa se modifice OrderService.
+  const checkoutValidation = chainOf(
+    new StockValidator(),
+    new AddressValidator(ordering.allowedCountries),
+    new AmountLimitValidator(ordering.maxOrderAmountCents),
+    new FraudCheckValidator(repositories.orders, ordering.fraud),
+  );
+
+  // Abonatii evenimentelor comenzii (Observer): jurnal fara date personale + repunerea stocului la anulare.
+  new OrderEventLogger(orderLogger).register(events);
+  new RestockOnOrderCancelled(orderCatalog, repositories.stockRestoration, orderLogger).register(
+    events,
+  );
+
   const orders = new OrderService(
     repositories.orders,
     new CartServiceSource(cart),
-    new CatalogOrderLookup(catalogQueries),
+    orderCatalog,
     repositories.orderPlacement,
+    checkoutValidation,
+    ordering.pricing,
+    events,
     ids,
-    logger.child({ module: 'ordering' }),
+    orderLogger,
   );
 
   return createApp({
@@ -214,6 +287,16 @@ export function createContainer(config: Config): Container {
     },
     checkDatabase: async () => {
       await prisma.$queryRaw`SELECT 1`;
+    },
+    ordering: {
+      pricing: { vatPercent: config.VAT_PERCENT, discountTiers: config.DISCOUNT_TIERS },
+      allowedCountries: config.SHIPPING_COUNTRIES,
+      maxOrderAmountCents: config.MAX_ORDER_AMOUNT_CENTS,
+      fraud: {
+        maxOrdersPerWindow: config.FRAUD_MAX_ORDERS_PER_WINDOW,
+        windowMs: config.FRAUD_WINDOW_SECONDS * 1000,
+        suspiciousAmountCents: config.FRAUD_SUSPICIOUS_AMOUNT_CENTS,
+      },
     },
   });
 

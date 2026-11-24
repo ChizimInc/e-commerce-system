@@ -5,6 +5,7 @@ import { Address } from '../../domain/Address';
 import { Order } from '../../domain/Order';
 import { OrderItem } from '../../domain/OrderItem';
 import type { OrderStatus } from '../../domain/OrderTypes';
+import { PriceBreakdown } from '../../domain/pricing/PriceBreakdown';
 import type { OrderListFilter, OrderRepository } from '../../ports/out/OrderRepository';
 
 type OrderRow = Prisma.OrderGetPayload<{ include: { items: true } }>;
@@ -15,7 +16,10 @@ export function toOrderCreateInput(order: Order): Prisma.OrderUncheckedCreateInp
     id: order.id,
     customerId: order.customerId,
     status: order.status,
-    totalAmount: order.total.amount,
+    subtotalAmount: order.price.subtotal.amount,
+    discountAmount: order.price.discount.amount,
+    vatAmount: order.price.vat.amount,
+    totalAmount: order.price.total.amount,
     currency: order.total.currency,
     deliveryMethod: order.deliveryMethod,
     paymentMethod: order.paymentMethod,
@@ -61,7 +65,12 @@ function toDomain(row: OrderRow): Order {
     }),
     deliveryMethod: row.deliveryMethod,
     paymentMethod: row.paymentMethod,
-    total: Money.of(row.totalAmount, row.currency),
+    price: PriceBreakdown.restore({
+      subtotal: Money.of(row.subtotalAmount, row.currency),
+      discount: Money.of(row.discountAmount, row.currency),
+      vat: Money.of(row.vatAmount, row.currency),
+      total: Money.of(row.totalAmount, row.currency),
+    }),
     createdAt: row.createdAt,
     status: row.status,
     paidAt: row.paidAt,
@@ -102,6 +111,10 @@ export class PrismaOrderRepository implements OrderRepository {
       this.prisma.order.count({ where }),
     ]);
     return { items: rows.map(toDomain), total };
+  }
+
+  countByCustomerSince(customerId: string, since: Date): Promise<number> {
+    return this.prisma.order.count({ where: { customerId, createdAt: { gte: since } } });
   }
 
   async updateStatus(order: Order, expectedStatus: OrderStatus): Promise<void> {

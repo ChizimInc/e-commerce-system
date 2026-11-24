@@ -1,7 +1,8 @@
 import { DomainError, type Money } from '../../../shared';
 import type { Address } from './Address';
-import { MAX_AMOUNT_CENTS, MAX_ORDER_LINES, type OrderItem } from './OrderItem';
+import { MAX_ORDER_LINES, type OrderItem } from './OrderItem';
 import type { DeliveryMethod, OrderStatus, PaymentMethod } from './OrderTypes';
+import type { PriceBreakdown } from './pricing/PriceBreakdown';
 import { invalidTransition, type OrderState } from './state/OrderState';
 import { NewState } from './state/NewState';
 import { stateFor } from './state/orderStates';
@@ -13,8 +14,8 @@ export interface OrderProps {
   readonly address: Address;
   readonly deliveryMethod: DeliveryMethod;
   readonly paymentMethod: PaymentMethod;
-  /** Totalul comenzii (acum suma liniilor; reducerile/taxele se adauga in Iteratia 3 partea B). */
-  readonly total: Money;
+  /** Rezultatul calculului de pret (subtotal, reducere, TVA, total), copiat in comanda la creare. */
+  readonly price: PriceBreakdown;
   readonly createdAt: Date;
 }
 
@@ -48,7 +49,7 @@ export class Order {
   readonly address: Address;
   readonly deliveryMethod: DeliveryMethod;
   readonly paymentMethod: PaymentMethod;
-  readonly total: Money;
+  readonly price: PriceBreakdown;
   readonly createdAt: Date;
   readonly paidAt: Date | null;
   private readonly state: OrderState;
@@ -60,7 +61,7 @@ export class Order {
     this.address = props.address;
     this.deliveryMethod = props.deliveryMethod;
     this.paymentMethod = props.paymentMethod;
-    this.total = props.total;
+    this.price = props.price;
     this.createdAt = props.createdAt;
     this.paidAt = paidAt;
     this.state = state;
@@ -80,6 +81,11 @@ export class Order {
 
   get status(): OrderStatus {
     return this.state.status;
+  }
+
+  /** Totalul de plata (dupa reducere si TVA). */
+  get total(): Money {
+    return this.price.total;
   }
 
   pay(at: Date = new Date()): Order {
@@ -127,15 +133,14 @@ export class Order {
         throw new DomainError(`Articol duplicat in comanda: ${item.itemId}`, 'INVALID_ORDER');
       }
       seen.add(item.itemId);
-      if (item.unitPrice.currency !== props.total.currency) {
+      if (item.unitPrice.currency !== props.price.total.currency) {
         throw new DomainError('Toate articolele trebuie sa aiba moneda totalului', 'INVALID_ORDER');
       }
     }
-    if (props.total.isNegative()) {
-      throw new DomainError('Totalul comenzii nu poate fi negativ', 'INVALID_ORDER');
-    }
-    if (props.total.amount > MAX_AMOUNT_CENTS) {
-      throw new DomainError('Totalul comenzii depaseste limita permisa', 'INVALID_ORDER');
+    // Subtotalul trebuie sa fie chiar suma liniilor (sumele sunt in cenți, deci aritmetica e exacta).
+    const linesSum = props.items.reduce((sum, item) => sum + item.lineTotal().amount, 0);
+    if (linesSum !== props.price.subtotal.amount) {
+      throw new DomainError('Subtotalul nu corespunde liniilor comenzii', 'INVALID_ORDER');
     }
   }
 }

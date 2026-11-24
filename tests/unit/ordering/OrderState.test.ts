@@ -127,7 +127,7 @@ describe('State: tranzitiile comenzii', () => {
         address: original.address,
         deliveryMethod: original.deliveryMethod,
         paymentMethod: original.paymentMethod,
-        total: original.total,
+        price: original.price,
         createdAt: original.createdAt,
         status: original.status,
         paidAt: original.paidAt,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { Money } from '../../../src/shared';
 import { Order } from '../../../src/modules/ordering/domain/Order';
+import { OrderBuilder } from '../../../src/modules/ordering/domain/OrderBuilder';
+import { PriceBreakdown } from '../../../src/modules/ordering/domain/pricing/PriceBreakdown';
 import {
   MAX_CART_LINES,
   MAX_LINE_QUANTITY as CART_MAX_QUANTITY,
@@ -24,7 +26,7 @@ describe('Order (invarianti)', () => {
       address: makeAddress(),
       deliveryMethod: order.deliveryMethod,
       paymentMethod: order.paymentMethod,
-      total: order.total,
+      price: order.price,
       createdAt: order.createdAt,
     };
   };
@@ -41,14 +43,22 @@ describe('Order (invarianti)', () => {
     );
   });
 
-  it('refuza un total negativ', () => {
-    expect(() => Order.create({ ...base(), total: Money.of(-1, 'RON') })).toThrowError(/negativ/);
+  it('refuza un pret intr-o alta moneda decat articolele', () => {
+    const price = PriceBreakdown.ofSubtotal(Money.of(20_000, 'EUR'));
+    expect(() => Order.create({ ...base(), price })).toThrowError(/moneda totalului/);
   });
 
-  it('refuza un total intr-o alta moneda decat articolele', () => {
-    expect(() => Order.create({ ...base(), total: Money.of(100, 'EUR') })).toThrowError(
-      /moneda totalului/,
-    );
+  it('refuza un subtotal care nu corespunde liniilor', () => {
+    const price = PriceBreakdown.ofSubtotal(Money.of(1, 'RON'));
+    expect(() => Order.create({ ...base(), price })).toThrowError(/Subtotalul nu corespunde/);
+  });
+
+  it('expune totalul din calculul de pret', () => {
+    const order = makeOrder({ pricing: { vatPercent: 19, discountTiers: [] } });
+    // 2 x 100.00 = 200.00; TVA 19% = 38.00
+    expect(order.price.subtotal.amount).toBe(20_000);
+    expect(order.price.vat.amount).toBe(3_800);
+    expect(order.total.amount).toBe(23_800);
   });
 
   it('refuza articole duplicate', () => {
@@ -74,22 +84,29 @@ describe('Order (invarianti)', () => {
 });
 
 describe('limite', () => {
-  it('totalul maxim e ce incape intr-un INTEGER PostgreSQL; peste el: INVALID_ORDER, nu 500 din baza de date', () => {
-    const base = makeOrder();
-    const props = {
-      id: base.id,
-      customerId: base.customerId,
-      items: base.items,
-      address: makeAddress(),
-      deliveryMethod: base.deliveryMethod,
-      paymentMethod: base.paymentMethod,
-      createdAt: base.createdAt,
-    };
+  const orderWith = (unitPrice: number, vatPercent: number) =>
+    makeOrder({
+      lines: [makeLine({ unitPrice: Money.of(unitPrice, 'RON'), quantity: 1 })],
+      pricing: { vatPercent, discountTiers: [] },
+    });
+
+  it('totalul maxim e ce incape intr-un INTEGER PostgreSQL; fara TVA, subtotalul maxim trece', () => {
+    expect(orderWith(MAX_AMOUNT_CENTS, 0).total.amount).toBe(MAX_AMOUNT_CENTS);
+  });
+
+  it('TVA care duce totalul peste limita e refuzat cu INVALID_ORDER, nu 500 din baza de date', () => {
+    expect(() => orderWith(MAX_AMOUNT_CENTS, 19)).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ORDER' }) as Error,
+    );
+    // Cea mai mare suma care, cu TVA 19%, mai incape: floor(MAX / 1.19) minus marja de rotunjire.
+    expect(orderWith(1_800_000_000, 19).total.amount).toBeLessThanOrEqual(MAX_AMOUNT_CENTS);
+  });
+
+  it('o linie care depaseste limita fara ca subtotalul sa o depaseasca nu exista: pretul unitar e limitat', () => {
     expect(() =>
-      Order.create({ ...props, total: Money.of(MAX_AMOUNT_CENTS, 'RON') }),
-    ).not.toThrow();
-    expect(() =>
-      Order.create({ ...props, total: Money.of(MAX_AMOUNT_CENTS + 1, 'RON') }),
+      OrderBuilder.forOrder(uuid(600)).addItem(
+        makeLine({ unitPrice: Money.of(MAX_AMOUNT_CENTS + 1, 'RON'), quantity: 1 }),
+      ),
     ).toThrowError(expect.objectContaining({ code: 'INVALID_ORDER' }) as Error);
   });
 

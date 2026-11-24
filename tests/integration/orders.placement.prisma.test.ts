@@ -8,7 +8,10 @@ import { PrismaUserRepository } from '../../src/modules/identity/adapters/persis
 import { Email } from '../../src/modules/identity/domain/Email';
 import { User } from '../../src/modules/identity/domain/User';
 import { PrismaOrderPlacement } from '../../src/modules/ordering/adapters/persistence/PrismaOrderPlacement';
+import { PrismaOrderRepository } from '../../src/modules/ordering/adapters/persistence/PrismaOrderRepository';
+import { PrismaStockRestoration } from '../../src/modules/ordering/adapters/persistence/PrismaStockRestoration';
 import { OrderBuilder } from '../../src/modules/ordering/domain/OrderBuilder';
+import { NO_PRICE_MODIFIERS } from '../../src/modules/ordering/domain/pricing/PricingPolicy';
 import { Money } from '../../src/shared';
 import { makeProduct } from '../helpers/catalog-fixtures';
 import { makeAddress } from '../helpers/order-fixtures';
@@ -71,6 +74,7 @@ describe.skipIf(!databaseUrl)('PrismaOrderPlacement (PostgreSQL)', () => {
       .shippingAddress(makeAddress())
       .delivery('STANDARD')
       .payment('CARD')
+      .pricing(NO_PRICE_MODIFIERS)
       .build();
     return {
       order,
@@ -117,5 +121,81 @@ describe.skipIf(!databaseUrl)('PrismaOrderPlacement (PostgreSQL)', () => {
       placement.place(await prepare(await newUser('spy-fail'), [a])),
     ).rejects.toMatchObject({ code: 'INSUFFICIENT_STOCK' });
     expect(calls).toEqual([[a]]);
+  });
+
+  it('anuntarea stocului repus: produsele modificate (sortate) doar cand repunerea se aplica; a doua oara nu anunta nimic', async () => {
+    const calls: (readonly string[])[] = [];
+    const restoration = new PrismaStockRestoration(prisma, (ids) => calls.push(ids));
+    const a = await newProduct(5);
+    const b = await newProduct(5);
+    const prepared = await prepare(await newUser('restore-spy'), [b, a]);
+    await new PrismaOrderRepository(prisma).add(prepared.order);
+
+    expect(await restoration.restore(prepared.order.id, prepared.stock)).toBe(true);
+    expect(await restoration.restore(prepared.order.id, prepared.stock)).toBe(false);
+
+    expect(calls).toEqual([[a, b].sort()]);
+    expect(
+      await prisma.orderStockRestoration.count({ where: { orderId: prepared.order.id } }),
+    ).toBe(1);
+  });
+
+  it('repunerea esuata (comanda inexistenta) nu schimba stocul si nu marcheaza nimic', async () => {
+    const restoration = new PrismaStockRestoration(prisma);
+    const a = await newProduct(5);
+    await expect(
+      restoration.restore(randomUUID(), [{ productId: a, quantity: 3 }]),
+    ).rejects.toBeDefined();
+    expect((await products.findById(a))?.stock).toBe(5); // tranzactia s-a anulat
+  });
+
+  it('baza de date refuza un pret inconsistent (total != subtotal - reducere + TVA) si o reducere peste subtotal', async () => {
+    const customerId = await newUser('check');
+    const row = {
+      customerId,
+      currency: 'RON' as const,
+      deliveryMethod: 'STANDARD' as const,
+      paymentMethod: 'CARD' as const,
+      shippingRecipient: 'A',
+      shippingStreet: 'B',
+      shippingCity: 'C',
+      shippingPostalCode: 'D',
+      shippingCountry: 'MD',
+    };
+    await expect(
+      prisma.order.create({
+        data: {
+          id: randomUUID(),
+          ...row,
+          subtotalAmount: 1000,
+          discountAmount: 100,
+          vatAmount: 171,
+          totalAmount: 1000,
+        },
+      }),
+    ).rejects.toBeDefined();
+    await expect(
+      prisma.order.create({
+        data: {
+          id: randomUUID(),
+          ...row,
+          subtotalAmount: 100,
+          discountAmount: 200,
+          vatAmount: 0,
+          totalAmount: -100,
+        },
+      }),
+    ).rejects.toBeDefined();
+    const ok = await prisma.order.create({
+      data: {
+        id: randomUUID(),
+        ...row,
+        subtotalAmount: 1000,
+        discountAmount: 100,
+        vatAmount: 171,
+        totalAmount: 1071,
+      },
+    });
+    expect(ok.totalAmount).toBe(1071);
   });
 });

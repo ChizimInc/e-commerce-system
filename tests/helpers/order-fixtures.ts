@@ -2,6 +2,10 @@ import { Money } from '../../src/shared';
 import { Address, type AddressProps } from '../../src/modules/ordering/domain/Address';
 import type { Order } from '../../src/modules/ordering/domain/Order';
 import { OrderBuilder } from '../../src/modules/ordering/domain/OrderBuilder';
+import {
+  NO_PRICE_MODIFIERS,
+  type PricingPolicy,
+} from '../../src/modules/ordering/domain/pricing/PricingPolicy';
 import type { OrderItemProps } from '../../src/modules/ordering/domain/OrderItem';
 import type { OrderStatus } from '../../src/modules/ordering/domain/OrderTypes';
 import { uuid } from './ids';
@@ -27,14 +31,22 @@ export const makeLine = (overrides: Partial<OrderItemProps> = {}): OrderItemProp
 
 /** O comanda NEW valida (2 x 100.00 RON), construita prin `OrderBuilder`. */
 export function makeOrder(
-  overrides: { id?: string; customerId?: string; lines?: OrderItemProps[]; createdAt?: Date } = {},
+  overrides: {
+    id?: string;
+    customerId?: string;
+    lines?: OrderItemProps[];
+    createdAt?: Date;
+    pricing?: PricingPolicy;
+    address?: Address;
+  } = {},
 ): Order {
   return OrderBuilder.forOrder(overrides.id ?? uuid(500))
     .customer(overrides.customerId ?? uuid(900))
     .addItems(overrides.lines ?? [makeLine()])
-    .shippingAddress(makeAddress())
+    .shippingAddress(overrides.address ?? makeAddress())
     .delivery('STANDARD')
     .payment('CARD')
+    .pricing(overrides.pricing ?? NO_PRICE_MODIFIERS)
     .placedAt(overrides.createdAt ?? new Date('2026-01-02T03:04:05.000Z'))
     .build();
 }

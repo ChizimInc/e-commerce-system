@@ -35,7 +35,7 @@ export const ordersOpenApi: OpenApiFragment = {
         tags: ['Orders'],
         summary: 'Creeaza o comanda din cosul curent',
         description:
-          'Copiaza preturile din catalog, scade stocul si goleste cosul, intr-o singura tranzactie. Comanda porneste in starea NEW.',
+          'Copiaza preturile din catalog, aplica reducerea si TVA configurate (total = subtotal - reducere + TVA), scade stocul si goleste cosul, intr-o singura tranzactie. Inainte de plasare ruleaza lantul de validare: stoc, adresa (tara livrabila), limita de suma, verificare anti-frauda. Comanda porneste in starea NEW.',
         security: bearerSecurity,
         requestBody: jsonBody(placeOrderSchema, {
           address: {
@@ -57,8 +57,9 @@ export const ordersOpenApi: OpenApiFragment = {
             'Stoc insuficient (INSUFFICIENT_STOCK) sau cosul s-a modificat intre timp (CART_CHANGED)',
           ),
           '422': errorResponse(
-            'Cos gol, total prea mare, adresa invalida sau monede diferite (INVALID_ORDER / INVALID_ADDRESS / MONEY_CURRENCY_MISMATCH)',
+            'Cos gol, total prea mare, adresa invalida sau tara nelivrabila, limita de suma depasita, comanda suspecta (INVALID_ORDER / INVALID_ADDRESS / UNSUPPORTED_COUNTRY / AMOUNT_LIMIT_EXCEEDED / ORDER_FLAGGED / MONEY_CURRENCY_MISMATCH)',
           ),
+          '429': errorResponse('Prea multe comenzi intr-un interval scurt (ORDER_RATE_LIMITED)'),
         },
       },
       get: {
@@ -93,7 +94,7 @@ export const ordersOpenApi: OpenApiFragment = {
         tags: ['Orders'],
         summary: 'Schimba statusul unei comenzi (ADMIN)',
         description:
-          'Tranzitii permise: NEW->PAID, NEW->CANCELLED, PAID->SHIPPED, PAID->CANCELLED, SHIPPED->DELIVERED, CANCELLED->REFUNDED (doar daca a fost platita). Orice alta tranzitie: 422 INVALID_ORDER_TRANSITION.',
+          'Tranzitii permise: NEW->PAID, NEW->CANCELLED, PAID->SHIPPED, PAID->CANCELLED, SHIPPED->DELIVERED, CANCELLED->REFUNDED (doar daca a fost platita). Orice alta tranzitie: 422 INVALID_ORDER_TRANSITION. Dupa salvare se emit evenimentele de domeniu; anularea repune stocul (o singura data pe comanda).',
         security: bearerSecurity,
         parameters: [idPathParam('Id-ul comenzii')],
         requestBody: jsonBody(changeOrderStatusSchema, { status: 'PAID' }),

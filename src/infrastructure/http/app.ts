@@ -13,6 +13,7 @@ import {
   DomainError,
   ForbiddenError,
   NotFoundError,
+  TooManyRequestsError,
   UnauthorizedError,
   type Logger,
 } from '../../shared';
@@ -50,6 +51,7 @@ function statusOf(error: DomainError): number {
   if (error instanceof ConflictError) return 409;
   if (error instanceof UnauthorizedError) return 401;
   if (error instanceof ForbiddenError) return 403;
+  if (error instanceof TooManyRequestsError) return 429;
   return 422;
 }
 

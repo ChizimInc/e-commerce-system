@@ -33,6 +33,13 @@ export class InMemoryOrderRepository implements OrderRepository {
     return Promise.resolve({ items: mine.slice(offset, offset + limit), total: mine.length });
   }
 
+  countByCustomerSince(customerId: string, since: Date): Promise<number> {
+    const count = [...this.store.values()].filter(
+      (order) => order.customerId === customerId && order.createdAt >= since,
+    ).length;
+    return Promise.resolve(count);
+  }
+
   updateStatus(order: Order, expectedStatus: OrderStatus): Promise<void> {
     const current = this.store.get(order.id);
     if (!current) return Promise.reject(new NotFoundError('Comanda', order.id));

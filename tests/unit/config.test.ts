@@ -85,3 +85,63 @@ describe('loadConfig', () => {
     }
   });
 });
+
+describe('loadConfig: reguli de pret si validare comenzi', () => {
+  it('aplica valori implicite (TVA 19%, doua praguri de reducere, RO si MD, limite anti-frauda)', () => {
+    const config = loadConfig(valid);
+    expect(config.VAT_PERCENT).toBe(19);
+    expect(config.DISCOUNT_TIERS).toEqual([
+      { minSubtotalCents: 50_000, percent: 5 },
+      { minSubtotalCents: 100_000, percent: 10 },
+    ]);
+    expect(config.SHIPPING_COUNTRIES).toEqual(['RO', 'MD']);
+    expect(config.MAX_ORDER_AMOUNT_CENTS).toBe(100_000_000);
+    expect(config.FRAUD_MAX_ORDERS_PER_WINDOW).toBe(5);
+    expect(config.FRAUD_WINDOW_SECONDS).toBe(600);
+    expect(config.FRAUD_SUSPICIOUS_AMOUNT_CENTS).toBe(50_000_000);
+  });
+
+  it('citeste TVA, pragurile de reducere si tarile din mediu', () => {
+    const config = loadConfig({
+      ...valid,
+      VAT_PERCENT: '9.5',
+      DISCOUNT_TIERS: ' 1000:2.5 , 20000:15 ',
+      SHIPPING_COUNTRIES: 'ro, de',
+    });
+    expect(config.VAT_PERCENT).toBe(9.5);
+    expect(config.DISCOUNT_TIERS).toEqual([
+      { minSubtotalCents: 1_000, percent: 2.5 },
+      { minSubtotalCents: 20_000, percent: 15 },
+    ]);
+    expect(config.SHIPPING_COUNTRIES).toEqual(['RO', 'DE']);
+  });
+
+  it('un sir gol dezactiveaza reducerile', () => {
+    expect(loadConfig({ ...valid, DISCOUNT_TIERS: '' }).DISCOUNT_TIERS).toEqual([]);
+  });
+
+  it.each([
+    ['VAT_PERCENT', '-1'],
+    ['VAT_PERCENT', '101'],
+    ['VAT_PERCENT', 'mult'],
+    ['VAT_PERCENT', ''],
+    ['VAT_PERCENT', '   '],
+    ['DISCOUNT_TIERS', '50000:5,50000:10'],
+    ['DISCOUNT_TIERS', '100000:5,50000:10'],
+    ['DISCOUNT_TIERS', '50000:5,100000:5'],
+    ['DISCOUNT_TIERS', '5000'],
+    ['DISCOUNT_TIERS', '5000:0'],
+    ['DISCOUNT_TIERS', '5000:101'],
+    ['DISCOUNT_TIERS', 'a:5'],
+    ['DISCOUNT_TIERS', '-5:5'],
+    ['SHIPPING_COUNTRIES', 'ROU'],
+    ['SHIPPING_COUNTRIES', 'R1'],
+    ['MAX_ORDER_AMOUNT_CENTS', '0'],
+    ['MAX_ORDER_AMOUNT_CENTS', '2147483648'],
+    ['FRAUD_MAX_ORDERS_PER_WINDOW', '0'],
+    ['FRAUD_WINDOW_SECONDS', '0'],
+    ['FRAUD_SUSPICIOUS_AMOUNT_CENTS', '2147483648'],
+  ])('refuza %s invalid (%s)', (name, value) => {
+    expect(() => loadConfig({ ...valid, [name]: value })).toThrowError(new RegExp(name));
+  });
+});

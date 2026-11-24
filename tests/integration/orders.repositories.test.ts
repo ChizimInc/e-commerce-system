@@ -7,6 +7,7 @@ import { Cart } from '../../src/modules/cart/domain/Cart';
 import type { CartRepository } from '../../src/modules/cart/ports/out/CartRepository';
 import { InMemoryProductRepository } from '../../src/modules/catalog/adapters/persistence/InMemoryProductRepository';
 import { PrismaProductRepository } from '../../src/modules/catalog/adapters/persistence/PrismaProductRepository';
+import { MAX_STOCK } from '../../src/modules/catalog/domain/Product';
 import type { ProductRepository } from '../../src/modules/catalog/ports/out/ProductRepository';
 import { InMemoryUserRepository } from '../../src/modules/identity/adapters/persistence/InMemoryUserRepository';
 import { PrismaUserRepository } from '../../src/modules/identity/adapters/persistence/PrismaUserRepository';
@@ -16,11 +17,18 @@ import type { UserRepository } from '../../src/modules/identity/ports/out/UserRe
 import { InMemoryOrderPlacement } from '../../src/modules/ordering/adapters/persistence/InMemoryOrderPlacement';
 import { InMemoryOrderRepository } from '../../src/modules/ordering/adapters/persistence/InMemoryOrderRepository';
 import { PrismaOrderPlacement } from '../../src/modules/ordering/adapters/persistence/PrismaOrderPlacement';
+import { InMemoryStockRestoration } from '../../src/modules/ordering/adapters/persistence/InMemoryStockRestoration';
 import { PrismaOrderRepository } from '../../src/modules/ordering/adapters/persistence/PrismaOrderRepository';
+import { PrismaStockRestoration } from '../../src/modules/ordering/adapters/persistence/PrismaStockRestoration';
 import type { Order } from '../../src/modules/ordering/domain/Order';
 import { OrderBuilder } from '../../src/modules/ordering/domain/OrderBuilder';
+import {
+  NO_PRICE_MODIFIERS,
+  type PricingPolicy,
+} from '../../src/modules/ordering/domain/pricing/PricingPolicy';
 import type { OrderPlacement } from '../../src/modules/ordering/ports/out/OrderPlacement';
 import type { OrderRepository } from '../../src/modules/ordering/ports/out/OrderRepository';
+import type { StockRestoration } from '../../src/modules/ordering/ports/out/StockRestoration';
 import { ConflictError, Money, NotFoundError } from '../../src/shared';
 import { makeProduct } from '../helpers/catalog-fixtures';
 import { makeAddress } from '../helpers/order-fixtures';
@@ -31,6 +39,7 @@ interface Harness {
   carts: CartRepository;
   orders: OrderRepository;
   placement: OrderPlacement;
+  restoration: StockRestoration;
   /** Sterge datele create de test (comenzi, utilizatori + cosuri, produse). */
   cleanup: (ids: { userIds: string[]; productIds: string[] }) => Promise<void>;
 }
@@ -38,7 +47,7 @@ interface Harness {
 /** Contractul `OrderRepository` si `OrderPlacement`, rulat pe fiecare adaptor (in-memory si PostgreSQL). */
 function contract(name: string, create: () => Harness, enabled = true): void {
   describe.skipIf(!enabled)(`Contract repository-uri ordering: ${name}`, () => {
-    const { users, products, carts, orders, placement, cleanup } = create();
+    const { users, products, carts, orders, placement, restoration, cleanup } = create();
     const tag = randomUUID().slice(0, 8);
     const userIds: string[] = [];
     const productIds: string[] = [];
@@ -69,6 +78,7 @@ function contract(name: string, create: () => Harness, enabled = true): void {
       customerId: string,
       lines: { itemId: string; quantity: number; amount?: number }[],
       createdAt = new Date('2026-01-02T03:04:05.000Z'),
+      pricing: PricingPolicy = NO_PRICE_MODIFIERS,
     ): Order =>
       OrderBuilder.forOrder(randomUUID())
         .customer(customerId)
@@ -83,6 +93,7 @@ function contract(name: string, create: () => Harness, enabled = true): void {
         .shippingAddress(makeAddress())
         .delivery('EXPRESS')
         .payment('CASH_ON_DELIVERY')
+        .pricing(pricing)
         .placedAt(createdAt)
         .build();
 
@@ -111,6 +122,48 @@ function contract(name: string, create: () => Harness, enabled = true): void {
         expect(
           loaded?.items.map((i) => [i.itemId, i.name, i.unitPrice.amount, i.quantity]),
         ).toEqual(order.items.map((i) => [i.itemId, i.name, i.unitPrice.amount, i.quantity]));
+      });
+
+      it('pastreaza calculul de pret (subtotal, reducere, TVA, total) la salvare si reincarcare', async () => {
+        const customerId = await newUser('price');
+        const order = buildOrder(
+          customerId,
+          [{ itemId: randomUUID(), quantity: 5, amount: 10_000 }],
+          new Date('2026-01-02T03:04:05.000Z'),
+          { vatPercent: 19, discountTiers: [{ minSubtotalCents: 50_000, percent: 5 }] },
+        );
+        expect(order.price.total.amount).toBe(56_525);
+        await orders.add(order);
+
+        const loaded = await orders.findById(order.id);
+        expect(loaded?.price.subtotal.amount).toBe(50_000);
+        expect(loaded?.price.discount.amount).toBe(2_500);
+        expect(loaded?.price.vat.amount).toBe(9_025);
+        expect(loaded?.total.amount).toBe(56_525);
+        const [listed] = (await orders.findByCustomerId({ customerId, limit: 5, offset: 0 })).items;
+        expect(listed?.price.total.amount).toBe(56_525);
+      });
+
+      it('countByCustomerSince numara doar comenzile clientului din interval (limita inclusa)', async () => {
+        const mine = await newUser('count1');
+        const other = await newUser('count2');
+        const item = () => [{ itemId: randomUUID(), quantity: 1 }];
+        for (const when of [
+          '2026-02-01T10:00:00Z',
+          '2026-02-01T11:00:00Z',
+          '2026-02-01T12:00:00Z',
+        ]) {
+          await orders.add(buildOrder(mine, item(), new Date(when)));
+        }
+        await orders.add(buildOrder(other, item(), new Date('2026-02-01T11:30:00Z')));
+
+        const count = (customerId: string, since: string) =>
+          orders.countByCustomerSince(customerId, new Date(since));
+        expect(await count(mine, '2026-02-01T00:00:00Z')).toBe(3);
+        expect(await count(mine, '2026-02-01T11:00:00Z')).toBe(2); // limita inferioara e inclusa
+        expect(await count(mine, '2026-02-01T12:00:01Z')).toBe(0);
+        expect(await count(other, '2026-02-01T00:00:00Z')).toBe(1);
+        expect(await count(randomUUID(), '2026-01-01T00:00:00Z')).toBe(0);
       });
 
       it('intoarce null pentru o comanda inexistenta', async () => {
@@ -366,6 +419,85 @@ function contract(name: string, create: () => Harness, enabled = true): void {
         ).toBe(1);
       });
     });
+
+    describe('StockRestoration', () => {
+      const orderWith = async (label: string) => {
+        const order = buildOrder(await newUser(label), [{ itemId: randomUUID(), quantity: 1 }]);
+        await orders.add(order);
+        return order;
+      };
+
+      it('repune stocul produselor', async () => {
+        const [a, b] = [await newProduct(10), await newProduct(0)];
+        const order = await orderWith('restore1');
+
+        const applied = await restoration.restore(order.id, [
+          { productId: a.id, quantity: 3 },
+          { productId: b.id, quantity: 2 },
+        ]);
+
+        expect(applied).toBe(true);
+        expect(await stockOf(a.id)).toBe(13);
+        expect(await stockOf(b.id)).toBe(2);
+      });
+
+      it('IDEMPOTENT: a doua repunere pentru aceeasi comanda nu face nimic', async () => {
+        const a = await newProduct(10);
+        const order = await orderWith('restore2');
+
+        expect(await restoration.restore(order.id, [{ productId: a.id, quantity: 4 }])).toBe(true);
+        expect(await restoration.restore(order.id, [{ productId: a.id, quantity: 4 }])).toBe(false);
+
+        expect(await stockOf(a.id)).toBe(14);
+      });
+
+      it('IDEMPOTENT si sub concurenta: repuneri simultane ale aceleiasi comenzi se aplica o singura data', async () => {
+        const a = await newProduct(10);
+        const order = await orderWith('restore3');
+
+        const results = await Promise.all(
+          Array.from({ length: 5 }, () =>
+            restoration.restore(order.id, [{ productId: a.id, quantity: 2 }]),
+          ),
+        );
+
+        expect(results.filter(Boolean)).toHaveLength(1);
+        expect(await stockOf(a.id)).toBe(12);
+      });
+
+      it('comenzi diferite se repun independent', async () => {
+        const a = await newProduct(10);
+        const first = await orderWith('restore4');
+        const second = await orderWith('restore5');
+
+        await restoration.restore(first.id, [{ productId: a.id, quantity: 1 }]);
+        await restoration.restore(second.id, [{ productId: a.id, quantity: 1 }]);
+
+        expect(await stockOf(a.id)).toBe(12);
+      });
+
+      it('un produs inexistent e sarit, ceilalti se repun', async () => {
+        const a = await newProduct(10);
+        const order = await orderWith('restore6');
+
+        await restoration.restore(order.id, [
+          { productId: randomUUID(), quantity: 5 },
+          { productId: a.id, quantity: 1 },
+        ]);
+
+        expect(await stockOf(a.id)).toBe(11);
+      });
+
+      it('stocul nu depaseste maximul din catalog (altfel produsul ar deveni ilizibil)', async () => {
+        const a = await newProduct(MAX_STOCK - 1);
+        const order = await orderWith('restore7');
+
+        await restoration.restore(order.id, [{ productId: a.id, quantity: 5 }]);
+
+        expect(await stockOf(a.id)).toBe(MAX_STOCK);
+        expect(await products.findById(a.id)).not.toBeNull(); // produsul se poate citi
+      });
+    });
   });
 }
 
@@ -379,6 +511,7 @@ contract('in-memory', () => {
     carts,
     orders,
     placement: new InMemoryOrderPlacement(orders, products, carts),
+    restoration: new InMemoryStockRestoration(products),
     cleanup: () => Promise.resolve(),
   };
 });
@@ -395,6 +528,7 @@ contract(
       carts: new PrismaCartRepository(prisma),
       orders: new PrismaOrderRepository(prisma),
       placement: new PrismaOrderPlacement(prisma),
+      restoration: new PrismaStockRestoration(prisma),
       cleanup: async ({ userIds, productIds }) => {
         // Comenzile refera utilizatorii cu ON DELETE RESTRICT: se sterg primele (liniile dispar in cascada).
         await prisma.order.deleteMany({ where: { customerId: { in: userIds } } });

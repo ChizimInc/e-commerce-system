@@ -1,7 +1,8 @@
 import {
-  ConflictError,
   ForbiddenError,
   NotFoundError,
+  type DomainEvent,
+  type EventBus,
   type IdGenerator,
   type Logger,
   type Principal,
@@ -10,6 +11,8 @@ import { Address } from '../domain/Address';
 import type { Order } from '../domain/Order';
 import { OrderBuilder } from '../domain/OrderBuilder';
 import type { OrderStatus } from '../domain/OrderTypes';
+import { eventForOrder } from '../domain/events/OrderEvents';
+import type { PricingPolicy } from '../domain/pricing/PricingPolicy';
 import type {
   ListOrdersQuery,
   OrderPage,
@@ -17,18 +20,28 @@ import type {
   PlaceOrderInput,
 } from '../ports/in/OrderUseCases';
 import type { CartSource } from '../ports/out/CartSource';
-import type { OrderCatalog, OrderableItem } from '../ports/out/OrderCatalog';
-import type { ConsumedCartLine, StockDeduction } from '../ports/out/OrderPlacement';
-import type { OrderPlacement } from '../ports/out/OrderPlacement';
+import type { OrderCatalog } from '../ports/out/OrderCatalog';
+import type { ConsumedCartLine, OrderPlacement } from '../ports/out/OrderPlacement';
 import type { OrderRepository } from '../ports/out/OrderRepository';
+import { aggregateStock } from './stockRequirements';
+import type { CheckoutLine, CheckoutValidator } from './validation/CheckoutValidator';
 
 /** Cazurile de utilizare ale comenzilor: creare din cos, istoric, detalii, schimbare de status (admin). */
 export class OrderService implements OrderUseCases {
+  /**
+   * @param validation capul lantului de validare a checkout-ului (Chain of Responsibility), asamblat in
+   *   composition root: verigi noi se adauga acolo, fara sa se modifice acest serviciu.
+   * @param pricing regulile de pret (reduceri, TVA) aplicate la crearea comenzii
+   * @param events magistrala pe care se publica evenimentele de domeniu, dupa ce tranzitia a fost salvata
+   */
   constructor(
     private readonly orders: OrderRepository,
     private readonly cart: CartSource,
     private readonly catalog: OrderCatalog,
     private readonly placement: OrderPlacement,
+    private readonly validation: CheckoutValidator,
+    private readonly pricing: PricingPolicy,
+    private readonly events: EventBus,
     private readonly ids: IdGenerator,
     private readonly logger: Logger,
   ) {}
@@ -50,14 +63,19 @@ export class OrderService implements OrderUseCases {
       .shippingAddress(Address.of(input.address))
       .delivery(input.deliveryMethod)
       .payment(input.paymentMethod)
+      .pricing(this.pricing)
       .build();
 
-    await this.placement.place({ order, stock: stockToDeduct(resolved), cartLines });
+    // Lantul de validare ruleaza inainte de plasare: prima veriga care refuza opreste comanda.
+    await this.validation.validate({ order, lines: resolved });
+
+    await this.placement.place({ order, stock: aggregateStock(resolved), cartLines });
     this.logger.info('Comanda plasata', {
       orderId: order.id,
       customerId: order.customerId,
       total: order.total.toString(),
     });
+    await this.emit(eventForOrder(order, new Date()));
     return order;
   }
 
@@ -92,44 +110,31 @@ export class OrderService implements OrderUseCases {
       to: updated.status,
       adminId: principal.userId,
     });
+    await this.emit(eventForOrder(updated, new Date()));
     return updated;
   }
 
-  /** Rezolva liniile cosului cu datele curente din catalog si verifica stocul inainte de a construi comanda. */
-  private async resolve(
-    lines: readonly ConsumedCartLine[],
-  ): Promise<{ item: OrderableItem; quantity: number }[]> {
+  /**
+   * Publica un eveniment DUPA ce schimbarea a fost salvata. Un eveniment care nu poate fi livrat nu
+   * trebuie sa strice comanda deja salvata, deci erorile se logheaza, nu se propaga.
+   */
+  private async emit(event: DomainEvent | null): Promise<void> {
+    if (!event) return;
+    try {
+      await this.events.publish(event);
+    } catch (error) {
+      this.logger.error('Evenimentul nu a putut fi publicat', { eventType: event.type, error });
+    }
+  }
+
+  /** Rezolva liniile cosului cu datele curente din catalog; stocul se verifica apoi in lantul de validare. */
+  private async resolve(lines: readonly ConsumedCartLine[]): Promise<CheckoutLine[]> {
     return Promise.all(
       lines.map(async ({ itemId, quantity }) => {
         const item = await this.catalog.find(itemId);
         if (!item) throw new NotFoundError('Produs', itemId);
-        if (quantity > item.availableStock) {
-          throw new ConflictError(
-            `Stoc insuficient pentru "${item.name}": ai cerut ${quantity}, disponibil ${item.availableStock}`,
-            'INSUFFICIENT_STOCK',
-          );
-        }
         return { item, quantity };
       }),
     );
   }
-}
-
-/**
- * Stocul de scazut, pe produse simple: un pachet consuma stocul componentelor, iar acelasi produs
- * poate aparea in mai multe linii (singur si in pachete), deci cantitatile se aduna pe produs.
- */
-function stockToDeduct(
-  resolved: readonly { item: OrderableItem; quantity: number }[],
-): StockDeduction[] {
-  const byProduct = new Map<string, number>();
-  for (const { item, quantity } of resolved) {
-    for (const part of item.stockPerUnit) {
-      byProduct.set(
-        part.productId,
-        (byProduct.get(part.productId) ?? 0) + part.quantity * quantity,
-      );
-    }
-  }
-  return [...byProduct].map(([productId, quantity]) => ({ productId, quantity }));
 }

@@ -1,4 +1,4 @@
-import { DomainError, type Money } from '../../../shared';
+import { DomainError } from '../../../shared';
 import type { Address } from './Address';
 import { Order } from './Order';
 import { OrderItem, type OrderItemProps } from './OrderItem';
@@ -8,14 +8,16 @@ import {
   type DeliveryMethod,
   type PaymentMethod,
 } from './OrderTypes';
+import { priceCalculatorFor, type PricingPolicy } from './pricing/PricingPolicy';
 
-// Pattern: Builder (Creational) – construieste pas cu pas o comanda (client, articole, adresa, livrare, plata) si o valideaza la build()
+// Pattern: Builder (Creational) – construieste pas cu pas o comanda (client, articole, adresa, livrare, plata, politica de pret) si o valideaza la build()
 export class OrderBuilder {
   private customerId: string | undefined;
   private readonly items: OrderItem[] = [];
   private address: Address | undefined;
   private deliveryMethod: DeliveryMethod | undefined;
   private paymentMethod: PaymentMethod | undefined;
+  private policy: PricingPolicy | undefined;
   private createdAt: Date | undefined;
 
   private constructor(private readonly id: string) {}
@@ -56,6 +58,12 @@ export class OrderBuilder {
     return this;
   }
 
+  /** Regulile de pret (reduceri, TVA) dupa care se calculeaza totalul; obligatoriu, ca sa nu se omita din greseala. */
+  pricing(policy: PricingPolicy): this {
+    this.policy = policy;
+    return this;
+  }
+
   /** Optional: momentul plasarii (implicit, momentul `build()`). */
   placedAt(date: Date): this {
     this.createdAt = date;
@@ -65,7 +73,7 @@ export class OrderBuilder {
   /** Verifica ca toti pasii obligatorii au fost facuti, apoi construieste comanda (starea NEW). */
   build(): Order {
     const customerId = this.customerId?.trim();
-    const { address, deliveryMethod, paymentMethod } = this;
+    const { address, deliveryMethod, paymentMethod, policy } = this;
     const hasDelivery = deliveryMethod !== undefined && DELIVERY_METHODS.includes(deliveryMethod);
     const hasPayment = paymentMethod !== undefined && PAYMENT_METHODS.includes(paymentMethod);
 
@@ -75,7 +83,15 @@ export class OrderBuilder {
     if (!address) missing.push('adresa');
     if (!hasDelivery) missing.push('metoda de livrare');
     if (!hasPayment) missing.push('metoda de plata');
-    if (!customerId || !address || !deliveryMethod || !paymentMethod || missing.length > 0) {
+    if (!policy) missing.push('politica de pret');
+    if (
+      !customerId ||
+      !address ||
+      !deliveryMethod ||
+      !paymentMethod ||
+      !policy ||
+      missing.length > 0
+    ) {
       throw new DomainError(`Comanda incompleta, lipsesc: ${missing.join(', ')}`, 'INVALID_ORDER');
     }
 
@@ -86,17 +102,8 @@ export class OrderBuilder {
       address,
       deliveryMethod,
       paymentMethod,
-      total: this.subtotal(),
+      price: priceCalculatorFor(this.items, policy).calculate(),
       createdAt: this.createdAt ?? new Date(),
     });
-  }
-
-  /** Suma liniilor; `Money` refuza moneda diferita intre linii. Apelata doar dupa verificarea ca exista linii. */
-  private subtotal(): Money {
-    const [first, ...rest] = this.items;
-    if (!first) {
-      throw new DomainError('Comanda trebuie sa contina cel putin un articol', 'INVALID_ORDER');
-    }
-    return rest.reduce((sum, item) => sum.add(item.lineTotal()), first.lineTotal());
   }
 }

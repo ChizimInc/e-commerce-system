@@ -3,11 +3,12 @@ import request from 'supertest';
 import {
   createApplication,
   createInMemoryRepositories,
+  type OrderingSettings,
   type Repositories,
 } from '../../src/composition-root';
 import { BcryptPasswordHasher } from '../../src/modules/identity/adapters/security/BcryptPasswordHasher';
 import { BootstrapAdmin } from '../../src/modules/identity/application/BootstrapAdmin';
-import { RandomUuidGenerator } from '../../src/shared';
+import { RandomUuidGenerator, type EventBus } from '../../src/shared';
 import { silentLogger } from './silent-logger';
 
 export const TEST_JWT_SECRET = 'test-secret-test-secret-test-secret-123456';
@@ -23,8 +24,14 @@ export interface TestApp {
   customerToken: (email?: string) => Promise<string>;
 }
 
+export interface TestAppOptions {
+  /** Regulile comenzilor (pret, validare); implicit: fara reduceri/TVA si cu praguri largi. */
+  ordering?: OrderingSettings;
+  events?: EventBus;
+}
+
 /** Aplicatia reala, asamblata pe adaptoare in-memory (fara baza de date), cu bcrypt rapid. */
-export function buildTestApp(): TestApp {
+export function buildTestApp(options: TestAppOptions = {}): TestApp {
   const repositories = createInMemoryRepositories();
   const app = createApplication({
     logger: silentLogger,
@@ -36,6 +43,7 @@ export function buildTestApp(): TestApp {
       authRateLimit: { windowMs: 60_000, max: 10_000 },
     },
     checkDatabase: () => Promise.resolve(),
+    ...options,
   });
 
   const login = async (email: string): Promise<string> => {

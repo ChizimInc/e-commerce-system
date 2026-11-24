@@ -32,3 +32,10 @@ export class ForbiddenError extends DomainError {
     super(message, 'FORBIDDEN');
   }
 }
+
+/** Prea multe cereri/operatii intr-un interval scurt (limitare de frecventa). */
+export class TooManyRequestsError extends DomainError {
+  constructor(message: string, code = 'TOO_MANY_REQUESTS') {
+    super(message, code);
+  }
+}

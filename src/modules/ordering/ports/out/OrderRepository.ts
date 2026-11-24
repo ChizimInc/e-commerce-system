@@ -14,6 +14,8 @@ export interface OrderRepository {
   findById(id: string): Promise<Order | null>;
   /** Comenzile unui client, cele mai noi primele (ordine stabila pentru paginare), plus totalul. */
   findByCustomerId(filter: OrderListFilter): Promise<{ items: Order[]; total: number }>;
+  /** Cate comenzi a plasat clientul de la `since` incoace (inclusiv); folosit de verificarea anti-frauda. */
+  countByCustomerSince(customerId: string, since: Date): Promise<number>;
   /**
    * Salveaza noul status al comenzii DOAR daca statusul din baza este inca `expectedStatus`
    * (concurenta optimista): doua tranzitii simultane din aceeasi stare nu se pot suprapune.

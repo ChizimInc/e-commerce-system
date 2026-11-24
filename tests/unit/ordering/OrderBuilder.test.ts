@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Money } from '../../../src/shared';
 import { OrderBuilder } from '../../../src/modules/ordering/domain/OrderBuilder';
 import { MAX_ORDER_LINES } from '../../../src/modules/ordering/domain/OrderItem';
+import { NO_PRICE_MODIFIERS } from '../../../src/modules/ordering/domain/pricing/PricingPolicy';
 import { makeAddress, makeLine } from '../../helpers/order-fixtures';
 import { uuid } from '../../helpers/ids';
 
@@ -14,7 +15,8 @@ describe('OrderBuilder', () => {
       .addItem(makeLine({ itemId: uuid(2), name: 'Mouse', unitPrice: Money.of(2_550, 'RON') }))
       .shippingAddress(makeAddress())
       .delivery('EXPRESS')
-      .payment('PAYPAL');
+      .payment('PAYPAL')
+      .pricing(NO_PRICE_MODIFIERS);
 
   it('construieste o comanda NEW cu toate campurile si totalul calculat in Money', () => {
     const at = new Date('2026-05-06T07:08:09.000Z');
@@ -45,6 +47,7 @@ describe('OrderBuilder', () => {
       .shippingAddress(makeAddress())
       .delivery('STANDARD')
       .payment('CARD')
+      .pricing(NO_PRICE_MODIFIERS)
       .build();
     expect(order.items).toHaveLength(2);
   });
@@ -61,7 +64,7 @@ describe('OrderBuilder', () => {
         expect.objectContaining({
           code: 'INVALID_ORDER',
           message:
-            'Comanda incompleta, lipsesc: clientul, articolele, adresa, metoda de livrare, metoda de plata',
+            'Comanda incompleta, lipsesc: clientul, articolele, adresa, metoda de livrare, metoda de plata, politica de pret',
         }) as Error,
       );
     });
@@ -76,12 +79,17 @@ describe('OrderBuilder', () => {
       // Pornim de la o comanda completa si stricam un singur pas.
       const builder = tweak(
         what === 'adresa'
-          ? base.customer(uuid(900)).delivery('STANDARD').payment('CARD')
+          ? base
+              .customer(uuid(900))
+              .delivery('STANDARD')
+              .payment('CARD')
+              .pricing(NO_PRICE_MODIFIERS)
           : base
               .customer(uuid(900))
               .shippingAddress(makeAddress())
               .delivery('STANDARD')
-              .payment('CARD'),
+              .payment('CARD')
+              .pricing(NO_PRICE_MODIFIERS),
       );
       expect(() => builder.build()).toThrowError(
         expect.objectContaining({
@@ -91,12 +99,23 @@ describe('OrderBuilder', () => {
       );
     });
 
+    it('refuza o comanda fara politica de pret (calculul nu se poate omite din greseala)', () => {
+      const builder = OrderBuilder.forOrder(uuid(508))
+        .customer(uuid(900))
+        .addItem(makeLine())
+        .shippingAddress(makeAddress())
+        .delivery('STANDARD')
+        .payment('CARD');
+      expect(() => builder.build()).toThrowError(/lipsesc: politica de pret/);
+    });
+
     it('refuza o comanda fara articole', () => {
       const builder = OrderBuilder.forOrder(uuid(504))
         .customer(uuid(900))
         .shippingAddress(makeAddress())
         .delivery('STANDARD')
-        .payment('CARD');
+        .payment('CARD')
+        .pricing(NO_PRICE_MODIFIERS);
       expect(() => builder.build()).toThrowError(/lipsesc: articolele/);
     });
 
@@ -121,7 +140,8 @@ describe('OrderBuilder', () => {
         .customer(uuid(900))
         .shippingAddress(makeAddress())
         .delivery('STANDARD')
-        .payment('CARD');
+        .payment('CARD')
+        .pricing(NO_PRICE_MODIFIERS);
       for (let i = 1; i <= MAX_ORDER_LINES + 1; i++) builder.addItem(makeLine({ itemId: uuid(i) }));
       expect(() => builder.build()).toThrowError(
         expect.objectContaining({ code: 'INVALID_ORDER' }) as Error,
